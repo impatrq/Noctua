@@ -1,4 +1,4 @@
-# 🦉 NOCTUA
+# 🦉 NYCTUS
 
 ## Prácticas Profesionalizantes 2026
 
@@ -8,7 +8,7 @@
 
 ## 📌 Descripción
 
-NOCTUA es un sistema de monitoreo inteligente orientado al sector agropecuario que utiliza visión artificial e inteligencia artificial para detectar, identificar y contabilizar animales de manera automática.
+NYCTUS es un sistema de monitoreo inteligente orientado al sector agropecuario que utiliza visión artificial e inteligencia artificial para detectar, identificar y contabilizar animales de manera automática.
 
 El proyecto combina drones, procesamiento de imágenes y una estación autónoma de monitoreo para generar información útil que facilite la toma de decisiones en establecimientos ganaderos.
 
@@ -111,7 +111,5 @@ Si desea obtener más información sobre el proyecto, realizar consultas o propo
 📧 **Email:** Proyectonyctus@gmail.com
 
 ---
-
-## 📄 Licencia
 
 Proyecto desarrollado con fines educativos para las Prácticas Profesionalizantes 2026.
