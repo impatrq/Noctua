@@ -28,10 +28,10 @@ El proyecto combina drones, procesamiento de imágenes y una estación autónoma
 
 - Python
 - YOLO (Object Detection)
-- OpenCV
+- Visual Studio Code
 - Inteligencia Artificial
 - Raspberry Pi (planificado)
-- Drones de monitoreo
+- Drone de monitoreo
 - Paneles solares
 - Sistemas de comunicación inalámbrica
 
@@ -104,7 +104,7 @@ Comisión C
 Actualmente se encuentra en etapa de investigación, recopilación de datos y entrenamiento inicial de modelos de inteligencia artificial.
 
 ---
-## 📬 Contacto
+## Nuestro Contacto
 
 Si desea obtener más información sobre el proyecto, realizar consultas o proponer colaboraciones, puede comunicarse con nosotros a través de:
 
