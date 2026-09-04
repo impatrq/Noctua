@@ -46,8 +46,10 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: paginas[paginaActual],
-
+      body: IndexedStack(
+        index: paginaActual,
+        children: paginas,
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: paginaActual,
         onDestinationSelected: (index) {
@@ -99,14 +101,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> cargarDatos() async {
+    setState(() {
+      cargando = true;
+    });
+
     try {
       final datos = await ApiService.obtenerAnalisis();
 
+      if (!mounted) return;
       setState(() {
         ganado = datos['ganado'];
         cargando = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         cargando = false;
       });
@@ -187,7 +195,7 @@ class _HomeScreenState extends State<HomeScreen> {
               width: double.infinity,
               height: 55,
               child: ElevatedButton.icon(
-                onPressed: cargarDatos, // vuelve a consultar la API
+                onPressed: cargarDatos,
                 icon: const Icon(Icons.refresh),
                 label: const Text('Actualizar datos'),
               ),
@@ -209,36 +217,53 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-}// --------------------------------------------------
+}
+
+// --------------------------------------------------
 // HISTORIAL
 // --------------------------------------------------
 
-class HistoryScreen extends StatelessWidget {
+class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final videos = [
-      {
-        'fecha': '12/08/2026 - 08:45',
-        'ganado': '124',
-        'personas': '2',
-        'duracion': '01:32',
-      },
-      {
-        'fecha': '11/08/2026 - 17:20',
-        'ganado': '98',
-        'personas': '0',
-        'duracion': '02:05',
-      },
-      {
-        'fecha': '10/08/2026 - 11:10',
-        'ganado': '142',
-        'personas': '1',
-        'duracion': '01:48',
-      },
-    ];
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
 
+class _HistoryScreenState extends State<HistoryScreen> {
+  List<Map<String, dynamic>> videos = [];
+  bool cargando = true;
+
+  @override
+  void initState() {
+    super.initState();
+    cargarHistorial();
+  }
+
+  Future<void> cargarHistorial() async {
+    setState(() {
+      cargando = true;
+    });
+
+    try {
+      final datos = await ApiService.obtenerHistorial();
+
+      if (!mounted) return;
+      setState(() {
+        videos = datos;
+        cargando = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        cargando = false;
+      });
+      debugPrint("Error al cargar historial: $e");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -258,50 +283,62 @@ class HistoryScreen extends StatelessWidget {
             const SizedBox(height: 20),
 
             Expanded(
-              child: ListView.builder(
-                itemCount: videos.length,
-                itemBuilder: (context, index) {
-                  final video = videos[index];
+              child: cargando
+                  ? const Center(child: CircularProgressIndicator())
+                  : videos.isEmpty
+                      ? const Center(
+                          child: Text(
+                            'Todavía no hay análisis registrados.',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: cargarHistorial,
+                          child: ListView.builder(
+                            itemCount: videos.length,
+                            itemBuilder: (context, index) {
+                              final video = videos[index];
 
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    child: ListTile(
-                      leading: Container(
-                        width: 60,
-                        height: 60,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade800,
-                          borderRadius: BorderRadius.circular(10),
+                              return Card(
+                                margin: const EdgeInsets.only(bottom: 12),
+                                child: ListTile(
+                                  leading: Container(
+                                    width: 60,
+                                    height: 60,
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade800,
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: const Icon(
+                                      Icons.play_arrow,
+                                      color: Colors.blue,
+                                    ),
+                                  ),
+
+                                  title: Text(video['fecha'].toString()),
+
+                                  subtitle: Text(
+                                    '🐄 ${video['ganado']} cabezas\n'
+                                    '👤 ${video['personas']} personas\n'
+                                    '⏱ ${video['duracion']}',
+                                  ),
+
+                                  isThreeLine: true,
+
+                                  trailing: const Icon(
+                                    Icons.arrow_forward_ios,
+                                    size: 16,
+                                  ),
+
+                                  onTap: () {
+                                    // Más adelante abriremos
+                                    // el detalle del análisis.
+                                  },
+                                ),
+                              );
+                            },
+                          ),
                         ),
-                        child: const Icon(
-                          Icons.play_arrow,
-                          color: Colors.blue,
-                        ),
-                      ),
-
-                      title: Text(video['fecha']!),
-
-                      subtitle: Text(
-                        '🐄 ${video['ganado']} cabezas\n'
-                        '👤 ${video['personas']} personas\n'
-                        '⏱ ${video['duracion']}',
-                      ),
-
-                      isThreeLine: true,
-
-                      trailing: const Icon(
-                        Icons.arrow_forward_ios,
-                        size: 16,
-                      ),
-
-                      onTap: () {
-                        // Más adelante abriremos
-                        // el detalle del análisis.
-                      },
-                    ),
-                  );
-                },
-              ),
             ),
           ],
         ),
