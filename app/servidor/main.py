@@ -11,7 +11,6 @@ ultimo_analisis = {
 
 class Analisis(BaseModel):
     ganado: int
-    personas: int
     video: str | None = None
 
 @app.post("/subir-analisis")
