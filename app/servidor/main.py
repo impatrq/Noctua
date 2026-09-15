@@ -1,10 +1,26 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
 
 app = FastAPI()
 
+# Base de datos temporal (después la cambiamos por una real)
+ultimo_analisis = {
+    "ganado": 0,
+    "personas": 0,
+    "video": None
+}
+
+class Analisis(BaseModel):
+    ganado: int
+    personas: int
+    video: str | None = None
+
+@app.post("/subir-analisis")
+def subir_analisis(datos: Analisis):
+    global ultimo_analisis
+    ultimo_analisis = datos.dict()
+    return {"mensaje": "Análisis recibido"}
+
 @app.get("/analisis")
 def obtener_analisis():
-    return {
-        "ganado": 200,
-        "personas": 2
-    }
+    return ultimo_analisis
