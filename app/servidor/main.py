@@ -3,10 +3,9 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-# Base de datos temporal (después la cambiamos por una real)
+
 ultimo_analisis = {
     "ganado": 0,
-    "personas": 0,
     "video": None
 }
 
