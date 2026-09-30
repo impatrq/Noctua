@@ -2,6 +2,7 @@ import cv2
 import os
 import json
 import requests
+import subprocess
 from datetime import datetime
 from ultralytics import YOLO
 
@@ -23,6 +24,46 @@ API_URL = "https://nyctus.onrender.com"
 
 os.makedirs(CARPETA_PROCESADOS, exist_ok=True)
 os.makedirs(CARPETA_LABELS, exist_ok=True)
+
+# ============================================================
+# COMPRESIÓN CON FFMPEG PARA NYCTUS
+# ============================================================
+
+def comprimir_video(entrada, salida):
+
+    print("\nComprimiendo video para la app...")
+
+    comando = [
+        "ffmpeg",
+        "-y",
+        "-i", entrada,
+
+        # Resolución fija para monitoreo
+        "-vf", "scale=1280:720",
+
+        # FPS suficiente para monitoreo
+        "-r", "30",
+
+        # Codec H.264
+        "-c:v", "libx264",
+
+        # Muy buena relación calidad/peso
+        "-preset", "medium",
+        "-crf", "27",
+
+        # Compatibilidad con Android e iPhone
+        "-pix_fmt", "yuv420p",
+
+        # Audio
+        "-c:a", "aac",
+        "-b:a", "128k",
+
+        salida
+    ]
+
+    subprocess.run(comando, check=True)
+
+    print("✓ Video comprimido.")
 
 # ============================================================
 # CARGAR MODELO
@@ -208,6 +249,26 @@ while cap.isOpened():
 cap.release()
 writer.release()
 cv2.destroyAllWindows()
+
+# ============================================================
+# COMPRESIÓN FINAL
+# ============================================================
+
+VIDEO_COMPACTO = os.path.join(
+    CARPETA_PROCESADOS,
+    f"{nombre_video}_720p.mp4"
+)
+
+comprimir_video(
+    VIDEO_SALIDA,
+    VIDEO_COMPACTO
+)
+
+# Borrar el archivo pesado
+os.remove(VIDEO_SALIDA)
+
+# A partir de acá usamos el comprimido
+VIDEO_SALIDA = VIDEO_COMPACTO
 
 # ============================================================
 # RESULTADO FINAL
