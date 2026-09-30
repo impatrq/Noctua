@@ -37,6 +37,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   flutter_native_splash: ^2.4.8
 
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -47,6 +48,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -65,12 +67,22 @@ flutter:
 
 flutter_native_splash:
   color: "#101820"
-  image: assets/logo.jpg
+  image: assets/logo_splash.jpg
+
   android: true
   ios: true
   web: false
 
+  android_12:
+    color: "#101820"
+    image: assets/logo_splash.jpg
 
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icono.png"
+  min_sdk_android: 21
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
 
