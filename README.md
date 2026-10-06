@@ -96,14 +96,6 @@ Curso: 7°1°
 Comisión C
 
 ---
-
-## 📅 Estado del Proyecto
-
-🚧 En desarrollo
-
-Actualmente se encuentra en etapa de investigación, recopilación de datos y entrenamiento inicial de modelos de inteligencia artificial.
-
----
 ## Nuestro Contacto
 
 Si desea obtener más información sobre el proyecto, realizar consultas o proponer colaboraciones, puede comunicarse con nosotros a través de:
