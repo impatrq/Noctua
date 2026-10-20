@@ -1,6 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 import os
@@ -13,17 +12,21 @@ import os
 app = FastAPI(
     title="NYCTUS API",
     description="API del sistema de monitoreo de ganado",
-    version="1.0"
+    version="1.1"
 )
 
 
 # ============================================================
-# CARPETA DE VIDEOS
+# CARPETAS DE VIDEOS
 # ============================================================
 
 CARPETA_VIDEOS = "videos"
+CARPETA_PROCESADOS = "videos/procesados"  # videos ya analizados por la IA
 
 os.makedirs(CARPETA_VIDEOS, exist_ok=True)
+os.makedirs(CARPETA_PROCESADOS, exist_ok=True)
+
+EXTENSIONES_PERMITIDAS = [".mp4", ".mov", ".avi", ".mkv"]
 
 
 # ============================================================
@@ -51,35 +54,16 @@ ultimo_analisis = {
 historial = []
 
 
-# Indica si existe una orden pendiente
+# Indica si existe una orden pendiente (Flutter -> Raspberry)
 analisis_pendiente = False
 
 
-# Indica si actualmente hay un video recibido
+# Indica si actualmente hay un video crudo esperando ser procesado por la IA
 video_recibido = False
 
 
-# Nombre del último video recibido
+# Nombre del último video recibido (crudo, de la Raspberry)
 ultimo_video = None
-
-
-# ============================================================
-# MODELO DE DATOS
-# ============================================================
-
-class ResultadoAnalisis(BaseModel):
-
-    ganado: int
-
-    personas: int = 0
-
-    video: Optional[str] = None
-
-    labels: Optional[str] = None
-
-    duracion: float = 0
-
-    fecha: Optional[str] = None
 
 
 # ============================================================
@@ -135,7 +119,7 @@ def nuevo_analisis():
 
 
 # ============================================================
-# CONSULTAR SI EXISTE UNA ORDEN
+# CONSULTAR SI EXISTE UNA ORDEN (la consulta la Raspberry)
 # ============================================================
 
 @app.get("/pendientes")
@@ -204,14 +188,7 @@ async def subir_video(
         file.filename
     )[1].lower()
 
-    extensiones_permitidas = [
-        ".mp4",
-        ".mov",
-        ".avi",
-        ".mkv"
-    ]
-
-    if extension not in extensiones_permitidas:
+    if extension not in EXTENSIONES_PERMITIDAS:
 
         raise HTTPException(
             status_code=400,
@@ -272,7 +249,8 @@ async def subir_video(
 
 
 # ============================================================
-# CONSULTAR SI HAY UN VIDEO RECIBIDO
+# CONSULTAR SI HAY UN VIDEO CRUDO PENDIENTE DE ANÁLISIS
+# (la consulta el worker de IA en la notebook)
 # ============================================================
 
 @app.get("/video-pendiente")
@@ -299,7 +277,26 @@ def consultar_video():
 
 
 # ============================================================
-# DESCARGAR EL VIDEO
+# CONFIRMAR QUE LA IA YA TOMÓ EL VIDEO CRUDO
+# (sin esto, /video-pendiente seguiría devolviendo "disponible"
+#  para siempre, aunque ya se haya procesado)
+# ============================================================
+
+@app.post("/video-pendiente/confirmar")
+def confirmar_video_pendiente():
+
+    global video_recibido
+
+    video_recibido = False
+
+    return {
+
+        "mensaje": "Video marcado como tomado por la IA"
+    }
+
+
+# ============================================================
+# DESCARGAR EL VIDEO CRUDO (lo pide el worker de IA)
 # ============================================================
 
 @app.get("/descargar-video")
@@ -337,12 +334,16 @@ def descargar_video():
 
 
 # ============================================================
-# RECIBIR RESULTADO DE LA IA
+# RECIBIR RESULTADO DE LA IA (datos + video procesado)
 # ============================================================
 
 @app.post("/subir-analisis")
-def subir_analisis(
-    datos: ResultadoAnalisis
+async def subir_analisis(
+    ganado: int = Form(...),
+    personas: int = Form(0),
+    duracion: float = Form(0),
+    fecha: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
 ):
 
     global ultimo_analisis
@@ -352,11 +353,49 @@ def subir_analisis(
     # Fecha
     # --------------------------------------------------------
 
-    fecha = datos.fecha
-
     if fecha is None:
 
         fecha = datetime.now().isoformat()
+
+    # --------------------------------------------------------
+    # Guardar el video procesado, si vino uno
+    # --------------------------------------------------------
+
+    nombre_video_procesado = None
+
+    if file is not None and file.filename:
+
+        extension = os.path.splitext(
+            file.filename
+        )[1].lower()
+
+        if extension not in EXTENSIONES_PERMITIDAS:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Formato de video no permitido"
+            )
+
+        # Nombre único por fecha para no pisar análisis anteriores
+        nombre_video_procesado = (
+            "analisis_" + fecha.replace(":", "-") + extension
+        )
+
+        ruta_procesado = os.path.join(
+            CARPETA_PROCESADOS,
+            nombre_video_procesado
+        )
+
+        with open(ruta_procesado, "wb") as archivo:
+
+            while True:
+
+                contenido = await file.read(1024 * 1024)
+
+                if not contenido:
+                    break
+
+                archivo.write(contenido)
 
     # --------------------------------------------------------
     # Crear resultado
@@ -364,33 +403,36 @@ def subir_analisis(
 
     resultado = {
 
-        "ganado": datos.ganado,
+        "ganado": ganado,
 
-        "personas": datos.personas,
+        "personas": personas,
 
-        "video": datos.video,
+        "video": nombre_video_procesado,
 
-        "labels": datos.labels,
-
-        "duracion": datos.duracion,
+        "duracion": duracion,
 
         "fecha": fecha
     }
 
     # --------------------------------------------------------
-    # Actualizar último análisis
+    # Actualizar último análisis y agregar al historial
     # --------------------------------------------------------
 
     ultimo_analisis = resultado
-
-    # --------------------------------------------------------
-    # Agregar al historial
-    # --------------------------------------------------------
 
     historial.insert(
         0,
         resultado
     )
+
+    print()
+    print("========================================")
+    print("      ANALISIS RECIBIDO - NYCTUS")
+    print("========================================")
+    print("Ganado:", ganado)
+    print("Video procesado:", nombre_video_procesado)
+    print("========================================")
+    print()
 
     return {
 
@@ -398,3 +440,30 @@ def subir_analisis(
 
         "resultado": resultado
     }
+
+
+# ============================================================
+# DESCARGAR EL VIDEO YA PROCESADO (lo pide Flutter)
+# ============================================================
+
+@app.get("/video-analisis/{nombre}")
+def descargar_video_analisis(nombre: str):
+
+    # nombre viene de ultimo_analisis["video"] o de un item del historial
+    ruta = os.path.join(CARPETA_PROCESADOS, nombre)
+
+    if not os.path.exists(ruta):
+
+        raise HTTPException(
+            status_code=404,
+            detail="El video procesado no existe"
+        )
+
+    return FileResponse(
+
+        path=ruta,
+
+        media_type="video/mp4",
+
+        filename=nombre
+    )
