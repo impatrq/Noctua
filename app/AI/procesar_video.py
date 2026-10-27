@@ -37,11 +37,16 @@ from ultralytics import YOLO
 # CONFIGURACIÓN
 # ============================================================
 API_URL = "https://nyctus.onrender.com"
-MODELO_PATH = "best.pt"
 
-CARPETA_DESCARGAS = "videos/pendientes"
-CARPETA_PROCESADOS = "videos/procesados"
-CARPETA_LABELS = "labels"
+# Rutas absolutas basadas en la ubicación de este archivo, así todo se
+# encuentra sin importar desde qué carpeta se ejecute el script (terminal,
+# F5/Start Debugging, etc.).
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELO_PATH = os.path.join(_BASE_DIR, "best.pt")
+
+CARPETA_DESCARGAS = os.path.join(_BASE_DIR, "videos", "pendientes")
+CARPETA_PROCESADOS = os.path.join(_BASE_DIR, "videos", "procesados")
+CARPETA_LABELS = os.path.join(_BASE_DIR, "labels")
 
 POLL_SECONDS = 10          # cada cuánto pregunta si hay un video nuevo
 MOSTRAR_VENTANA = True      # False = corre sin abrir la ventana de preview

@@ -654,6 +654,10 @@ class _HistoryScreenState
 
   bool cargando = true;
 
+  // Refresca el historial solo, sin que el usuario tenga que hacer nada,
+  // así un video nuevo aparece mientras la app está abierta.
+  Timer? _timerAutoRefresh;
+
 
   @override
   void initState() {
@@ -661,6 +665,17 @@ class _HistoryScreenState
     super.initState();
 
     cargarHistorial();
+
+    _timerAutoRefresh = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => cargarHistorial(mostrarCargando: false),
+    );
+  }
+
+  @override
+  void dispose() {
+    _timerAutoRefresh?.cancel();
+    super.dispose();
   }
 
 
@@ -668,12 +683,16 @@ class _HistoryScreenState
   // CARGAR HISTORIAL
   // ========================================================
 
-  Future<void> cargarHistorial()
-      async {
+  Future<void> cargarHistorial({
+    bool mostrarCargando = true,
+  }) async {
 
-    setState(() {
-      cargando = true;
-    });
+    if (mostrarCargando) {
+
+      setState(() {
+        cargando = true;
+      });
+    }
 
 
     try {
@@ -707,6 +726,20 @@ class _HistoryScreenState
         "Error al cargar historial: $e",
       );
     }
+  }
+
+
+  // ========================================================
+  // FORMATEAR DURACIÓN (sin decimales interminables)
+  // ========================================================
+
+  String _formatearDuracion(dynamic valor) {
+
+    final segundos = (valor is num)
+        ? valor.toDouble()
+        : double.tryParse(valor.toString()) ?? 0.0;
+
+    return '${segundos.toStringAsFixed(1)} s';
   }
 
 
@@ -858,7 +891,7 @@ class _HistoryScreenState
 
                                         '🐄 ${video['ganado'] ?? 0} cabezas\n'
                                         '👤 ${video['personas'] ?? 0} personas\n'
-                                        '⏱ ${video['duracion'] ?? 0} segundos',
+                                        '⏱ ${_formatearDuracion(video['duracion'] ?? 0)}',
                                       ),
 
 
