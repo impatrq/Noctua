@@ -1,9 +1,16 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 import 'services/api_service.dart';
 
 void main() {
   runApp(const NereasApp());
 }
+
+// Tiempo a partir del cual un análisis se considera "viejo" y el contador
+// de Inicio deja de mostrarlo, volviendo a 0. Ajustá este valor a lo que
+// tenga sentido para el uso real (p. ej. la duración típica entre vuelos).
+const Duration kTiempoExpiracionAnalisis = Duration(minutes: 20);
 
 class NereasApp extends StatelessWidget {
   const NereasApp({super.key});
@@ -151,6 +158,14 @@ class _HomeScreenState
   String mensajeEstado =
       '';
 
+  // Fecha del último análisis que devolvió el servidor (para saber si
+  // "venció" y hay que dejar de mostrarlo).
+  DateTime? fechaUltimoAnalisis;
+
+  // Refresca la pantalla cada tanto SOLO para reevaluar si el análisis
+  // ya venció, sin golpear al servidor de nuevo.
+  Timer? _timerExpiracion;
+
 
   @override
   void initState() {
@@ -158,6 +173,19 @@ class _HomeScreenState
     super.initState();
 
     cargarDatos();
+
+    _timerExpiracion = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) {
+        if (mounted) setState(() {});
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _timerExpiracion?.cancel();
+    super.dispose();
   }
 
 
@@ -187,6 +215,11 @@ class _HomeScreenState
 
         ganado =
             (datos['ganado'] ?? 0) as int;
+
+        fechaUltimoAnalisis =
+            DateTime.tryParse(
+          (datos['fecha'] ?? '').toString(),
+        );
 
         cargando = false;
       });
@@ -330,8 +363,22 @@ class _HomeScreenState
   }
 
 
+  // ========================================================
+  // ¿El último análisis ya "venció"?
+  // ========================================================
+
+  bool get analisisVencido {
+    if (fechaUltimoAnalisis == null) return true;
+    return DateTime.now().difference(fechaUltimoAnalisis!) >
+        kTiempoExpiracionAnalisis;
+  }
+
+
   @override
   Widget build(BuildContext context) {
+
+    final mostrarVencido = !cargando && analisisVencido;
+    final ganadoAMostrar = mostrarVencido ? 0 : ganado;
 
     return SafeArea(
 
@@ -424,7 +471,7 @@ class _HomeScreenState
 
                       : Text(
 
-                          '$ganado',
+                          '$ganadoAMostrar',
 
                           style:
                               const TextStyle(
@@ -458,9 +505,11 @@ class _HomeScreenState
 
                   Text(
 
-                    mensajeEstado.isEmpty
-                        ? 'Datos obtenidos del servidor'
-                        : mensajeEstado,
+                    mostrarVencido
+                        ? 'Sin análisis reciente'
+                        : (mensajeEstado.isEmpty
+                            ? 'Datos obtenidos del servidor'
+                            : mensajeEstado),
 
                     textAlign:
                         TextAlign.center,
@@ -747,6 +796,13 @@ class _HistoryScreenState
                                   final video =
                                       videos[index];
 
+                                  // El backend guarda solo el nombre del
+                                  // archivo (p. ej. "analisis_....mp4");
+                                  // acá se arma la URL completa para
+                                  // reproducirlo.
+                                  final String? nombreArchivo =
+                                      video['video'] as String?;
+
 
                                   return Card(
 
@@ -822,27 +878,35 @@ class _HistoryScreenState
 
                                       onTap: () {
 
-                                        final videoUrl =
-                                            video['video'];
-
-
-                                        if (videoUrl !=
-                                            null) {
+                                        if (nombreArchivo == null ||
+                                            nombreArchivo.isEmpty) {
 
                                           ScaffoldMessenger
                                               .of(context)
                                               .showSnackBar(
 
-                                            SnackBar(
-
-                                              content:
-                                                  Text(
-
-                                                'Video disponible: $videoUrl',
+                                            const SnackBar(
+                                              content: Text(
+                                                'Este análisis no tiene '
+                                                'video procesado.',
                                               ),
                                             ),
                                           );
+
+                                          return;
                                         }
+
+                                        final videoUrl =
+                                            '${ApiService.baseUrl}/video-analisis/$nombreArchivo';
+
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                VideoPlayerScreen(
+                                              videoUrl: videoUrl,
+                                            ),
+                                          ),
+                                        );
                                       },
                                     ),
                                   );
@@ -853,6 +917,101 @@ class _HistoryScreenState
           ],
         ),
       ),
+    );
+  }
+}
+
+
+// ==========================================================
+// REPRODUCTOR DE VIDEO (análisis procesado)
+// ==========================================================
+
+class VideoPlayerScreen extends StatefulWidget {
+
+  final String videoUrl;
+
+  const VideoPlayerScreen({
+    super.key,
+    required this.videoUrl,
+  });
+
+  @override
+  State<VideoPlayerScreen> createState() =>
+      _VideoPlayerScreenState();
+}
+
+class _VideoPlayerScreenState
+    extends State<VideoPlayerScreen> {
+
+  late final VideoPlayerController _controller;
+  bool _error = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _controller =
+        VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl))
+          ..initialize().then((_) {
+            if (!mounted) return;
+            setState(() {});
+            _controller.play();
+          }).catchError((_) {
+            if (!mounted) return;
+            setState(() {
+              _error = true;
+            });
+          });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Video del análisis')),
+      body: Center(
+        child: _error
+            ? const Text(
+                'No se pudo cargar el video.',
+                style: TextStyle(color: Colors.grey),
+              )
+            : _controller.value.isInitialized
+                ? AspectRatio(
+                    aspectRatio: _controller.value.aspectRatio,
+                    child: Stack(
+                      alignment: Alignment.bottomCenter,
+                      children: [
+                        VideoPlayer(_controller),
+                        VideoProgressIndicator(
+                          _controller,
+                          allowScrubbing: true,
+                        ),
+                      ],
+                    ),
+                  )
+                : const CircularProgressIndicator(),
+      ),
+      floatingActionButton: _controller.value.isInitialized
+          ? FloatingActionButton(
+              onPressed: () {
+                setState(() {
+                  _controller.value.isPlaying
+                      ? _controller.pause()
+                      : _controller.play();
+                });
+              },
+              child: Icon(
+                _controller.value.isPlaying
+                    ? Icons.pause
+                    : Icons.play_arrow,
+              ),
+            )
+          : null,
     );
   }
 }
