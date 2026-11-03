@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
+
 import 'services/api_service.dart';
 import 'services/local_historial_service.dart';
 
@@ -13,10 +15,8 @@ void main() {
   runApp(const NereasApp());
 }
 
-// Tiempo a partir del cual un análisis se considera "viejo" y el contador
-// de Inicio deja de mostrarlo, volviendo a 0. Ajustá este valor a lo que
-// tenga sentido para el uso real (p. ej. la duración típica entre vuelos).
-const Duration kTiempoExpiracionAnalisis = Duration(minutes: 20);
+const Duration kTiempoExpiracionAnalisis =
+    Duration(minutes: 20);
 
 class NereasApp extends StatelessWidget {
   const NereasApp({super.key});
@@ -26,26 +26,19 @@ class NereasApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Nyctus',
-
       theme: ThemeData(
         brightness: Brightness.dark,
-
-        scaffoldBackgroundColor:
-            const Color(0xFF101820),
-
+        scaffoldBackgroundColor: const Color(0xFF101820),
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.blue,
           brightness: Brightness.dark,
         ),
-
         useMaterial3: true,
       ),
-
       home: const MainScreen(),
     );
   }
 }
-
 
 // ==========================================================
 // PANTALLA PRINCIPAL
@@ -55,14 +48,10 @@ class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
   @override
-  State<MainScreen> createState() =>
-      _MainScreenState();
+  State<MainScreen> createState() => _MainScreenState();
 }
 
-
-class _MainScreenState
-    extends State<MainScreen> {
-
+class _MainScreenState extends State<MainScreen> {
   int paginaActual = 0;
 
   final paginas = const [
@@ -71,61 +60,34 @@ class _MainScreenState
     SettingsScreen(),
   ];
 
-
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
-
       body: IndexedStack(
         index: paginaActual,
         children: paginas,
       ),
-
-      bottomNavigationBar:
-          NavigationBar(
-
-        selectedIndex:
-            paginaActual,
-
-        onDestinationSelected:
-            (index) {
-
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: paginaActual,
+        onDestinationSelected: (index) {
           setState(() {
             paginaActual = index;
           });
-
         },
-
         destinations: const [
-
           NavigationDestination(
-            icon:
-                Icon(Icons.home_outlined),
-
-            selectedIcon:
-                Icon(Icons.home),
-
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
             label: 'Inicio',
           ),
-
           NavigationDestination(
-            icon:
-                Icon(Icons.history_outlined),
-
-            selectedIcon:
-                Icon(Icons.history),
-
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history),
             label: 'Historial',
           ),
-
           NavigationDestination(
-            icon:
-                Icon(Icons.settings_outlined),
-
-            selectedIcon:
-                Icon(Icons.settings),
-
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
             label: 'Ajustes',
           ),
         ],
@@ -133,12 +95,6 @@ class _MainScreenState
     );
   }
 }
-
-
-// ==========================================================
-// INICIO
-// ==========================================================
-
 
 // ==========================================================
 // INICIO
@@ -170,18 +126,24 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _timerExpiracion;
   Timer? _timerEstado;
 
+  // Estados que representan un análisis REAL en curso.
+  // Que el worker esté conectado no significa que haya
+  // un análisis activo.
   static const Set<String> _estadosActivos = {
     'pendiente',
     'grabando',
     'subiendo',
     'esperando_ia',
+    'descargando',
     'procesando',
     'comprimiendo',
+    'subiendo_resultado',
   };
 
-  bool get analisisEnCurso =>
-      _estadosActivos.contains(estadoActual) ||
-      solicitandoAnalisis;
+  bool get analisisEnCurso {
+    return _estadosActivos.contains(estadoActual) ||
+        solicitandoAnalisis;
+  }
 
   @override
   void initState() {
@@ -202,7 +164,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _timerExpiracion = Timer.periodic(
       const Duration(seconds: 1),
       (_) {
-        if (mounted) setState(() {});
+        if (mounted) {
+          setState(() {});
+        }
       },
     );
   }
@@ -264,7 +228,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
 
       final nuevoEstado =
-          datos['estado']?.toString() ?? 'inactivo';
+          (datos['estado']?.toString() ?? 'inactivo')
+              .toLowerCase()
+              .trim();
 
       final nuevaFechaInicio = DateTime.tryParse(
         datos['fecha_inicio']?.toString() ?? '',
@@ -281,13 +247,24 @@ class _HomeScreenState extends State<HomeScreen> {
       final nuevoWorkerOnline =
           datos['worker_online'] == true;
 
+      // Detectar si acaba de completarse el análisis.
+      // Así evitamos descargar los datos repetidamente
+      // cada vez que se consulta el servidor.
+      final acabaDeCompletar =
+          nuevoEstado == 'completado' &&
+          estadoActual != 'completado';
+
       setState(() {
         estadoActual = nuevoEstado;
-        progreso = nuevoProgreso.clamp(0, 100);
+
+        progreso = nuevoProgreso.clamp(0, 100).toInt();
+
         mensajeEstado = nuevoMensaje;
         workerOnline = nuevoWorkerOnline;
         fechaInicioAnalisis = nuevaFechaInicio;
 
+        // El botón se bloquea únicamente cuando el servidor
+        // informa que existe un análisis en curso.
         solicitandoAnalisis =
             _estadosActivos.contains(nuevoEstado);
 
@@ -302,8 +279,8 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
 
-      // Cuando termina, actualizar el contador de ganado.
-      if (nuevoEstado == 'completado') {
+      // Actualizar el contador solamente cuando termina.
+      if (acabaDeCompletar) {
         await cargarDatos();
       }
     } catch (e) {
@@ -335,6 +312,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       setState(() {
         estadoActual = 'pendiente';
+        solicitandoAnalisis = true;
         mensajeEstado =
             'Solicitud recibida. Esperando a la Raspberry Pi.';
       });
@@ -352,8 +330,8 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (!mounted) return;
 
-      // Si el servidor responde que ya existe un análisis,
-      // consultar su estado en lugar de liberar el botón.
+      // Si el servidor informa que ya existe un análisis,
+      // consultamos su estado antes de liberar el botón.
       await consultarEstado();
 
       if (!mounted) return;
@@ -366,7 +344,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('No se pudo solicitar el análisis: $e'),
+          content: Text(
+            'No se pudo solicitar el análisis: $e',
+          ),
           duration: const Duration(seconds: 4),
         ),
       );
@@ -430,11 +410,17 @@ class _HomeScreenState extends State<HomeScreen> {
       case 'esperando_ia':
         return 'Esperando computadora';
 
+      case 'descargando':
+        return 'Descargando video';
+
       case 'procesando':
         return 'Procesando con inteligencia artificial';
 
       case 'comprimiendo':
         return 'Comprimiendo video';
+
+      case 'subiendo_resultado':
+        return 'Subiendo resultado';
 
       case 'completado':
         return 'Análisis completado';
@@ -454,7 +440,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final mostrarVencido = !cargando && analisisVencido;
-    final ganadoAMostrar = mostrarVencido ? 0 : ganado;
+
+    final ganadoAMostrar =
+        mostrarVencido ? 0 : ganado;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -558,7 +546,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
                     Expanded(
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment:
+                            CrossAxisAlignment.start,
                         children: [
                           const Text(
                             'Computadora de inteligencia artificial',
@@ -566,7 +555,9 @@ class _HomeScreenState extends State<HomeScreen> {
                               fontWeight: FontWeight.w600,
                             ),
                           ),
+
                           const SizedBox(height: 3),
+
                           Text(
                             workerOnline
                                 ? 'Conectada y disponible'
@@ -607,7 +598,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(18),
                   ),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
                     children: [
                       Row(
                         children: [
@@ -702,6 +694,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       if (estadoActual == 'error' &&
                           mensajeEstado.isNotEmpty) ...[
                         const SizedBox(height: 12),
+
                         Text(
                           mensajeEstado,
                           style: const TextStyle(
@@ -713,6 +706,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       if (analisisEnCurso && !workerOnline) ...[
                         const SizedBox(height: 12),
+
                         const Text(
                           'La computadora de IA no está enviando señales. '
                           'El análisis puede quedar esperando hasta que se conecte.',
@@ -749,6 +743,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   onPressed: analisisEnCurso
                       ? null
                       : solicitarNuevoAnalisis,
+
                   icon: analisisEnCurso
                       ? const SizedBox(
                           width: 20,
@@ -757,7 +752,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             strokeWidth: 2,
                           ),
                         )
-                      : const Icon(Icons.video_camera_back),
+                      : const Icon(
+                          Icons.video_camera_back,
+                        ),
+
                   label: Text(
                     analisisEnCurso
                         ? 'Análisis en curso...'
@@ -775,47 +773,36 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-
 // ==========================================================
 // HISTORIAL
 // ==========================================================
 
-class HistoryScreen
-    extends StatefulWidget {
-
-  const HistoryScreen({
-    super.key,
-  });
+class HistoryScreen extends StatefulWidget {
+  const HistoryScreen({super.key});
 
   @override
   State<HistoryScreen> createState() =>
       _HistoryScreenState();
 }
 
-
-class _HistoryScreenState
-    extends State<HistoryScreen> {
-
-  List<Map<String, dynamic>>
-      videos = [];
+class _HistoryScreenState extends State<HistoryScreen> {
+  List<Map<String, dynamic>> videos = [];
 
   bool cargando = true;
 
-  // Refresca el historial solo, sin que el usuario tenga que hacer nada,
-  // así un video nuevo aparece mientras la app está abierta.
   Timer? _timerAutoRefresh;
-
 
   @override
   void initState() {
-
     super.initState();
 
     _cargarCacheYSincronizar();
 
     _timerAutoRefresh = Timer.periodic(
       const Duration(seconds: 10),
-      (_) => cargarHistorial(mostrarCargando: false),
+      (_) => cargarHistorial(
+        mostrarCargando: false,
+      ),
     );
   }
 
@@ -825,19 +812,15 @@ class _HistoryScreenState
     super.dispose();
   }
 
-
   // ========================================================
-  // MOSTRAR DE INMEDIATO LO YA GUARDADO EN EL CELULAR, Y
-  // RECIÉN DESPUÉS SINCRONIZAR CON RENDER
+  // MOSTRAR CACHE LOCAL Y DESPUÉS SINCRONIZAR CON RENDER
   // ========================================================
 
   Future<void> _cargarCacheYSincronizar() async {
-
     final cache =
         await LocalHistorialService.instancia.cargarLocal();
 
     if (mounted && cache.isNotEmpty) {
-
       setState(() {
         videos = cache;
         cargando = false;
@@ -849,63 +832,47 @@ class _HistoryScreenState
     );
   }
 
-
   // ========================================================
-  // CARGAR / SINCRONIZAR HISTORIAL (servidor + copia local)
+  // CARGAR / SINCRONIZAR HISTORIAL
   // ========================================================
 
   Future<void> cargarHistorial({
     bool mostrarCargando = true,
   }) async {
+    if (!mounted) return;
 
     if (mostrarCargando) {
-
       setState(() {
         cargando = true;
       });
     }
 
-
     try {
-
       final datos =
           await LocalHistorialService.instancia.sincronizar();
 
-
       if (!mounted) return;
 
-
       setState(() {
-
         videos = datos;
-
         cargando = false;
       });
-
-
     } catch (e) {
-
       if (!mounted) return;
-
 
       setState(() {
         cargando = false;
       });
 
-
-      debugPrint(
-        "Error al cargar historial: $e",
-      );
+      debugPrint('Error al cargar historial: $e');
     }
   }
 
-
   // ========================================================
-  // FORMATEAR DURACIÓN (sin decimales interminables)
+  // FORMATEAR DURACIÓN
   // ========================================================
 
   String _formatearDuracion(dynamic valor) {
-
     final segundos = (valor is num)
         ? valor.toDouble()
         : double.tryParse(valor.toString()) ?? 0.0;
@@ -913,232 +880,137 @@ class _HistoryScreenState
     return '${segundos.toStringAsFixed(1)} s';
   }
 
-
   @override
   Widget build(BuildContext context) {
-
     return SafeArea(
-
       child: Padding(
-
-        padding:
-            const EdgeInsets.all(20),
-
+        padding: const EdgeInsets.all(20),
         child: Column(
-
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-
-            const SizedBox(
-              height: 20,
-            ),
-
+            const SizedBox(height: 20),
 
             const Text(
-
               'Historial',
-
-              style:
-                  TextStyle(
-
+              style: TextStyle(
                 fontSize: 32,
-
-                fontWeight:
-                    FontWeight.bold,
+                fontWeight: FontWeight.bold,
               ),
             ),
 
-
-            const SizedBox(
-              height: 20,
-            ),
-
+            const SizedBox(height: 20),
 
             Expanded(
-
-              child:
-
-                  cargando
-
+              child: cargando
+                  ? const Center(
+                      child: CircularProgressIndicator(),
+                    )
+                  : videos.isEmpty
                       ? const Center(
-                          child:
-                              CircularProgressIndicator(),
-                        )
-
-                      : videos.isEmpty
-
-                          ? const Center(
-
-                              child: Text(
-
-                                'Todavía no hay análisis registrados.',
-
-                                style:
-                                    TextStyle(
-                                  color:
-                                      Colors.grey,
-                                ),
-                              ),
-                            )
-
-                          : RefreshIndicator(
-
-                              onRefresh:
-                                  cargarHistorial,
-
-                              child:
-                                  ListView.builder(
-
-                                itemCount:
-                                    videos.length,
-
-                                itemBuilder:
-                                    (context, index) {
-
-                                  final video =
-                                      videos[index];
-
-                                  // El backend guarda solo el nombre del
-                                  // archivo (p. ej. "analisis_....mp4");
-                                  // acá se arma la URL completa para
-                                  // reproducirlo.
-                                  final String? nombreArchivo =
-                                      video['video'] as String?;
-
-
-                                  return Card(
-
-                                    margin:
-                                        const EdgeInsets.only(
-                                      bottom: 12,
-                                    ),
-
-                                    child:
-                                        ListTile(
-
-                                      leading:
-                                          Container(
-
-                                        width: 60,
-
-                                        height: 60,
-
-                                        decoration:
-                                            BoxDecoration(
-
-                                          color:
-                                              Colors.grey.shade800,
-
-                                          borderRadius:
-                                              BorderRadius.circular(
-                                            10,
-                                          ),
-                                        ),
-
-                                        child:
-                                            const Icon(
-
-                                          Icons.play_arrow,
-
-                                          color:
-                                              Colors.blue,
-                                        ),
-                                      ),
-
-
-                                      title:
-                                          Text(
-
-                                        video['fecha']
-                                                ?.toString() ??
-                                            'Sin fecha',
-                                      ),
-
-
-                                      subtitle:
-                                          Text(
-
-                                        '🐄 ${video['ganado'] ?? 0} cabezas\n'
-                                        '👤 ${video['personas'] ?? 0} personas\n'
-                                        '⏱ ${_formatearDuracion(video['duracion'] ?? 0)}',
-                                      ),
-
-
-                                      isThreeLine:
-                                          true,
-
-
-                                      trailing:
-                                          const Icon(
-
-                                        Icons
-                                            .arrow_forward_ios,
-
-                                        size: 16,
-                                      ),
-
-
-                                      onTap: () {
-
-                                        // Si ya lo tenemos descargado en
-                                        // el celular, lo reproducimos de
-                                        // ahí directamente (funciona
-                                        // aunque Render lo haya perdido).
-                                        final archivoLocal =
-                                            video['archivo_local']
-                                                as String?;
-
-                                        if (archivoLocal != null) {
-
-                                          Navigator.of(context).push(
-                                            MaterialPageRoute(
-                                              builder: (_) =>
-                                                  VideoPlayerScreen(
-                                                rutaLocal: archivoLocal,
-                                              ),
-                                            ),
-                                          );
-
-                                          return;
-                                        }
-
-                                        if (nombreArchivo == null ||
-                                            nombreArchivo.isEmpty) {
-
-                                          ScaffoldMessenger
-                                              .of(context)
-                                              .showSnackBar(
-
-                                            const SnackBar(
-                                              content: Text(
-                                                'Este análisis no tiene '
-                                                'video procesado.',
-                                              ),
-                                            ),
-                                          );
-
-                                          return;
-                                        }
-
-                                        final videoUrl =
-                                            '${ApiService.baseUrl}/video-analisis/$nombreArchivo';
-
-                                        Navigator.of(context).push(
-                                          MaterialPageRoute(
-                                            builder: (_) =>
-                                                VideoPlayerScreen(
-                                              videoUrl: videoUrl,
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  );
-                                },
-                              ),
+                          child: Text(
+                            'Todavía no hay análisis registrados.',
+                            style: TextStyle(
+                              color: Colors.grey,
                             ),
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: cargarHistorial,
+                          child: ListView.builder(
+                            itemCount: videos.length,
+                            itemBuilder: (context, index) {
+                              final video = videos[index];
+
+                              final String? nombreArchivo =
+                                  video['video'] as String?;
+
+                              return Card(
+                                margin: const EdgeInsets.only(
+                                  bottom: 12,
+                                ),
+                                child: ListTile(
+                                  leading: Container(
+                                    width: 60,
+                                    height: 60,
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade800,
+                                      borderRadius:
+                                          BorderRadius.circular(10),
+                                    ),
+                                    child: const Icon(
+                                      Icons.play_arrow,
+                                      color: Colors.blue,
+                                    ),
+                                  ),
+
+                                  title: Text(
+                                    video['fecha']?.toString() ??
+                                        'Sin fecha',
+                                  ),
+
+                                  subtitle: Text(
+                                    '🐄 ${video['ganado'] ?? 0} cabezas\n'
+                                    '👤 ${video['personas'] ?? 0} personas\n'
+                                    '⏱ ${_formatearDuracion(video['duracion'] ?? 0)}',
+                                  ),
+
+                                  isThreeLine: true,
+
+                                  trailing: const Icon(
+                                    Icons.arrow_forward_ios,
+                                    size: 16,
+                                  ),
+
+                                  onTap: () {
+                                    // Reproducir primero la copia local.
+                                    final archivoLocal =
+                                        video['archivo_local'] as String?;
+
+                                    if (archivoLocal != null) {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              VideoPlayerScreen(
+                                            rutaLocal: archivoLocal,
+                                          ),
+                                        ),
+                                      );
+
+                                      return;
+                                    }
+
+                                    if (nombreArchivo == null ||
+                                        nombreArchivo.isEmpty) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Este análisis no tiene '
+                                            'video procesado.',
+                                          ),
+                                        ),
+                                      );
+
+                                      return;
+                                    }
+
+                                    final videoUrl =
+                                        '${ApiService.baseUrl}/video-analisis/$nombreArchivo';
+
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            VideoPlayerScreen(
+                                          videoUrl: videoUrl,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                        ),
             ),
           ],
         ),
@@ -1147,15 +1019,11 @@ class _HistoryScreenState
   }
 }
 
-
 // ==========================================================
-// REPRODUCTOR DE VIDEO (análisis procesado)
+// REPRODUCTOR DE VIDEO
 // ==========================================================
 
 class VideoPlayerScreen extends StatefulWidget {
-
-  // Se pasa uno de los dos: videoUrl para reproducir desde Render,
-  // rutaLocal para reproducir desde el archivo ya guardado en el celular.
   final String? videoUrl;
   final String? rutaLocal;
 
@@ -1175,8 +1043,8 @@ class VideoPlayerScreen extends StatefulWidget {
 
 class _VideoPlayerScreenState
     extends State<VideoPlayerScreen> {
-
   late final VideoPlayerController _controller;
+
   bool _error = false;
 
   @override
@@ -1184,15 +1052,22 @@ class _VideoPlayerScreenState
     super.initState();
 
     _controller = widget.rutaLocal != null
-        ? VideoPlayerController.file(File(widget.rutaLocal!))
-        : VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl!));
+        ? VideoPlayerController.file(
+            File(widget.rutaLocal!),
+          )
+        : VideoPlayerController.networkUrl(
+            Uri.parse(widget.videoUrl!),
+          );
 
     _controller.initialize().then((_) {
       if (!mounted) return;
+
       setState(() {});
+
       _controller.play();
     }).catchError((_) {
       if (!mounted) return;
+
       setState(() {
         _error = true;
       });
@@ -1208,20 +1083,27 @@ class _VideoPlayerScreenState
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Video del análisis')),
+      appBar: AppBar(
+        title: const Text('Video del análisis'),
+      ),
+
       body: Center(
         child: _error
             ? const Text(
                 'No se pudo cargar el video.',
-                style: TextStyle(color: Colors.grey),
+                style: TextStyle(
+                  color: Colors.grey,
+                ),
               )
             : _controller.value.isInitialized
                 ? AspectRatio(
-                    aspectRatio: _controller.value.aspectRatio,
+                    aspectRatio:
+                        _controller.value.aspectRatio,
                     child: Stack(
                       alignment: Alignment.bottomCenter,
                       children: [
                         VideoPlayer(_controller),
+
                         VideoProgressIndicator(
                           _controller,
                           allowScrubbing: true,
@@ -1231,133 +1113,75 @@ class _VideoPlayerScreenState
                   )
                 : const CircularProgressIndicator(),
       ),
-      floatingActionButton: _controller.value.isInitialized
-          ? FloatingActionButton(
-              onPressed: () {
-                setState(() {
-                  _controller.value.isPlaying
-                      ? _controller.pause()
-                      : _controller.play();
-                });
-              },
-              child: Icon(
-                _controller.value.isPlaying
-                    ? Icons.pause
-                    : Icons.play_arrow,
-              ),
-            )
-          : null,
+
+      floatingActionButton:
+          _controller.value.isInitialized
+              ? FloatingActionButton(
+                  onPressed: () {
+                    setState(() {
+                      _controller.value.isPlaying
+                          ? _controller.pause()
+                          : _controller.play();
+                    });
+                  },
+                  child: Icon(
+                    _controller.value.isPlaying
+                        ? Icons.pause
+                        : Icons.play_arrow,
+                  ),
+                )
+              : null,
     );
   }
 }
-
 
 // ==========================================================
 // AJUSTES
 // ==========================================================
 
-class SettingsScreen
-    extends StatelessWidget {
-
-  const SettingsScreen({
-    super.key,
-  });
-
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-
     return SafeArea(
-
       child: ListView(
-
-        padding:
-            const EdgeInsets.all(20),
-
+        padding: const EdgeInsets.all(20),
         children: [
-
-          const SizedBox(
-            height: 20,
-          ),
-
+          const SizedBox(height: 20),
 
           const Text(
-
             'Ajustes',
-
-            style:
-                TextStyle(
-
+            style: TextStyle(
               fontSize: 32,
-
-              fontWeight:
-                  FontWeight.bold,
+              fontWeight: FontWeight.bold,
             ),
           ),
 
-
-          const SizedBox(
-            height: 25,
-          ),
-
+          const SizedBox(height: 25),
 
           SwitchListTile(
-
-            title:
-                const Text(
-              'Notificaciones',
-            ),
-
-            subtitle:
-                const Text(
+            title: const Text('Notificaciones'),
+            subtitle: const Text(
               'Recibir avisos de nuevos análisis',
             ),
-
             value: true,
-
-            onChanged:
-                (value) {},
+            onChanged: (value) {},
           ),
-
 
           const Divider(),
 
-
           ListTile(
-
-            leading:
-                const Icon(
-              Icons.cloud,
-            ),
-
-            title:
-                const Text(
-              'Sincronización',
-            ),
-
-            subtitle:
-                const Text(
-              'Conectado',
-            ),
-
+            leading: const Icon(Icons.cloud),
+            title: const Text('Sincronización'),
+            subtitle: const Text('Conectado'),
             onTap: () {},
           ),
 
-
           ListTile(
-
-            leading:
-                const Icon(
-              Icons.info_outline,
-            ),
-
-            title:
-                const Text(
-              'Acerca de Nyctus',
-            ),
-
+            leading: const Icon(Icons.info_outline),
+            title: const Text('Acerca de Nyctus'),
             onTap: () async {
-
               final uri = Uri.parse(kUrlPaginaWeb);
 
               final pudoAbrir = await launchUrl(
@@ -1366,11 +1190,7 @@ class SettingsScreen
               );
 
               if (!pudoAbrir && context.mounted) {
-
-                ScaffoldMessenger
-                    .of(context)
-                    .showSnackBar(
-
+                ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text(
                       'No se pudo abrir la página.',
