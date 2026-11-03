@@ -1,7 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'services/api_service.dart';
+import 'services/local_historial_service.dart';
+
+const String kUrlPaginaWeb =
+    'https://sites.google.com/view/proyecto-nyctus/introducci%C3%B3n-del-proyecto';
 
 void main() {
   runApp(const NereasApp());
@@ -664,7 +670,7 @@ class _HistoryScreenState
 
     super.initState();
 
-    cargarHistorial();
+    _cargarCacheYSincronizar();
 
     _timerAutoRefresh = Timer.periodic(
       const Duration(seconds: 10),
@@ -680,7 +686,31 @@ class _HistoryScreenState
 
 
   // ========================================================
-  // CARGAR HISTORIAL
+  // MOSTRAR DE INMEDIATO LO YA GUARDADO EN EL CELULAR, Y
+  // RECIÉN DESPUÉS SINCRONIZAR CON RENDER
+  // ========================================================
+
+  Future<void> _cargarCacheYSincronizar() async {
+
+    final cache =
+        await LocalHistorialService.instancia.cargarLocal();
+
+    if (mounted && cache.isNotEmpty) {
+
+      setState(() {
+        videos = cache;
+        cargando = false;
+      });
+    }
+
+    await cargarHistorial(
+      mostrarCargando: cache.isEmpty,
+    );
+  }
+
+
+  // ========================================================
+  // CARGAR / SINCRONIZAR HISTORIAL (servidor + copia local)
   // ========================================================
 
   Future<void> cargarHistorial({
@@ -698,7 +728,7 @@ class _HistoryScreenState
     try {
 
       final datos =
-          await ApiService.obtenerHistorial();
+          await LocalHistorialService.instancia.sincronizar();
 
 
       if (!mounted) return;
@@ -911,6 +941,28 @@ class _HistoryScreenState
 
                                       onTap: () {
 
+                                        // Si ya lo tenemos descargado en
+                                        // el celular, lo reproducimos de
+                                        // ahí directamente (funciona
+                                        // aunque Render lo haya perdido).
+                                        final archivoLocal =
+                                            video['archivo_local']
+                                                as String?;
+
+                                        if (archivoLocal != null) {
+
+                                          Navigator.of(context).push(
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  VideoPlayerScreen(
+                                                rutaLocal: archivoLocal,
+                                              ),
+                                            ),
+                                          );
+
+                                          return;
+                                        }
+
                                         if (nombreArchivo == null ||
                                             nombreArchivo.isEmpty) {
 
@@ -961,12 +1013,19 @@ class _HistoryScreenState
 
 class VideoPlayerScreen extends StatefulWidget {
 
-  final String videoUrl;
+  // Se pasa uno de los dos: videoUrl para reproducir desde Render,
+  // rutaLocal para reproducir desde el archivo ya guardado en el celular.
+  final String? videoUrl;
+  final String? rutaLocal;
 
   const VideoPlayerScreen({
     super.key,
-    required this.videoUrl,
-  });
+    this.videoUrl,
+    this.rutaLocal,
+  }) : assert(
+          videoUrl != null || rutaLocal != null,
+          'Hay que pasar videoUrl o rutaLocal',
+        );
 
   @override
   State<VideoPlayerScreen> createState() =>
@@ -983,18 +1042,20 @@ class _VideoPlayerScreenState
   void initState() {
     super.initState();
 
-    _controller =
-        VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl))
-          ..initialize().then((_) {
-            if (!mounted) return;
-            setState(() {});
-            _controller.play();
-          }).catchError((_) {
-            if (!mounted) return;
-            setState(() {
-              _error = true;
-            });
-          });
+    _controller = widget.rutaLocal != null
+        ? VideoPlayerController.file(File(widget.rutaLocal!))
+        : VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl!));
+
+    _controller.initialize().then((_) {
+      if (!mounted) return;
+      setState(() {});
+      _controller.play();
+    }).catchError((_) {
+      if (!mounted) return;
+      setState(() {
+        _error = true;
+      });
+    });
   }
 
   @override
@@ -1154,7 +1215,29 @@ class SettingsScreen
               'Acerca de Nyctus',
             ),
 
-            onTap: () {},
+            onTap: () async {
+
+              final uri = Uri.parse(kUrlPaginaWeb);
+
+              final pudoAbrir = await launchUrl(
+                uri,
+                mode: LaunchMode.externalApplication,
+              );
+
+              if (!pudoAbrir && context.mounted) {
+
+                ScaffoldMessenger
+                    .of(context)
+                    .showSnackBar(
+
+                  const SnackBar(
+                    content: Text(
+                      'No se pudo abrir la página.',
+                    ),
+                  ),
+                );
+              }
+            },
           ),
         ],
       ),
