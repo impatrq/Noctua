@@ -1,31 +1,23 @@
+```python
 #!/usr/bin/env python3
 """
 NYCTUS - Worker de notebook/PC (procesar_video.py).
 
-Toma tu script de procesamiento (YOLOv8 + conteo por tracking + overlay +
-compresión ffmpeg) y lo convierte en un loop que:
-
-  1. Pregunta a Render GET /video-pendiente cada POLL_SECONDS.
-  2. Si hay un video ("estado": "disponible"), lo descarga con
-     GET /descargar-video y confirma con POST /video-pendiente/confirmar
-     (así Render no lo vuelve a ofrecer mientras este se procesa).
-  3. Corre el mismo pipeline de YOLO que ya tenías (sin cambios de lógica).
-  4. Comprime el resultado con ffmpeg (igual que antes: 1280x720, CRF 27).
-  5. Sube ganado/personas/duracion/fecha + el video procesado en una sola
-     llamada multipart a POST /subir-analisis, que ya lo guarda y lo deja
-     disponible para Flutter en GET /video-analisis/<nombre>.
-
-Esto está ajustado al server.py real de Render (versión con
-/video-pendiente/confirmar y /subir-analisis multipart).
-
-Requisitos en esta máquina:
-    pip install ultralytics opencv-python requests
-    ffmpeg instalado y en el PATH
+Funciones:
+1. Consulta videos pendientes en Render.
+2. Descarga el video y confirma que el worker lo tomó.
+3. Procesa los frames con YOLOv8 y tracking.
+4. Guarda las detecciones en JSON.
+5. Genera el video anotado y lo comprime con FFmpeg.
+6. Sube el resultado a Render.
+7. Informa estados, progreso y errores.
+8. Envía heartbeat para informar que la PC está conectada.
 """
 
 import json
 import os
 import subprocess
+import threading
 import time
 from datetime import datetime
 
@@ -33,141 +25,413 @@ import cv2
 import requests
 from ultralytics import YOLO
 
+
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
+
 API_URL = "https://nyctus.onrender.com"
 
-# Rutas absolutas basadas en la ubicación de este archivo, así todo se
-# encuentra sin importar desde qué carpeta se ejecute el script (terminal,
-# F5/Start Debugging, etc.).
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 MODELO_PATH = os.path.join(_BASE_DIR, "best.pt")
 
 CARPETA_DESCARGAS = os.path.join(_BASE_DIR, "videos", "pendientes")
 CARPETA_PROCESADOS = os.path.join(_BASE_DIR, "videos", "procesados")
 CARPETA_LABELS = os.path.join(_BASE_DIR, "labels")
 
-POLL_SECONDS = 10          # cada cuánto pregunta si hay un video nuevo
-MOSTRAR_VENTANA = True      # False = corre sin abrir la ventana de preview
+POLL_SECONDS = 10
+HEARTBEAT_SECONDS = 10
+
+MOSTRAR_VENTANA = True
 
 os.makedirs(CARPETA_DESCARGAS, exist_ok=True)
 os.makedirs(CARPETA_PROCESADOS, exist_ok=True)
 os.makedirs(CARPETA_LABELS, exist_ok=True)
 
-print("Cargando modelo YOLO...")
+
+# ============================================================
+# CARGA DEL MODELO
+# ============================================================
+
+print("[NYCTUS] Cargando modelo YOLO...")
+
 modelo = YOLO(MODELO_PATH)
-print("Modelo cargado correctamente.")
+
+print("[NYCTUS] Modelo cargado correctamente.")
 
 
 # ============================================================
-# COMPRESIÓN CON FFMPEG (igual que tu script original)
+# COMUNICACIÓN DE ESTADOS CON RENDER
 # ============================================================
+
+def reportar_estado(estado, progreso, mensaje):
+    """Informa a Render el estado actual del análisis."""
+
+    datos = {
+        "estado": estado,
+        "progreso": int(max(0, min(100, progreso))),
+        "mensaje": mensaje,
+    }
+
+    try:
+        respuesta = requests.post(
+            f"{API_URL}/estado/actualizar",
+            json=datos,
+            timeout=10,
+        )
+
+        respuesta.raise_for_status()
+
+        print(
+            f"[NYCTUS] Estado: {estado} "
+            f"({datos['progreso']}%) - {mensaje}"
+        )
+
+    except requests.exceptions.RequestException as e:
+        print(f"[NYCTUS] No se pudo actualizar el estado: {e}")
+
+
+def informar_error(mensaje):
+    """Informa a Render que el análisis tuvo un error."""
+
+    print(f"[NYCTUS] ERROR: {mensaje}")
+
+    try:
+        respuesta = requests.post(
+            f"{API_URL}/estado/error",
+            json={"error": str(mensaje)},
+            timeout=10,
+        )
+
+        respuesta.raise_for_status()
+
+    except requests.exceptions.RequestException as e:
+        print(f"[NYCTUS] No se pudo informar el error: {e}")
+
+
+# ============================================================
+# HEARTBEAT DEL WORKER
+# ============================================================
+
+def mantener_worker_activo():
+    """
+    Envía señales periódicas a Render.
+
+    Se ejecuta en un hilo independiente para que el servidor
+    sepa que la PC sigue conectada incluso durante el procesamiento.
+    """
+
+    while True:
+        try:
+            respuesta = requests.post(
+                f"{API_URL}/worker/heartbeat",
+                timeout=10,
+            )
+
+            respuesta.raise_for_status()
+
+        except requests.exceptions.RequestException as e:
+            print(f"[NYCTUS] Heartbeat: no se pudo contactar Render: {e}")
+
+        time.sleep(HEARTBEAT_SECONDS)
+
+
+def iniciar_heartbeat():
+    hilo = threading.Thread(
+        target=mantener_worker_activo,
+        daemon=True,
+    )
+
+    hilo.start()
+
+    print("[NYCTUS] Heartbeat iniciado.")
+
+
+# ============================================================
+# COMPRESIÓN CON FFMPEG
+# ============================================================
+
 def comprimir_video(entrada, salida):
-    print("\nComprimiendo video para la app...")
+
+    reportar_estado(
+        "comprimiendo",
+        88,
+        "Comprimiendo el video para la aplicación...",
+    )
+
+    print("\n[NYCTUS] Comprimiendo video...")
+
     comando = [
-        "ffmpeg", "-y", "-i", entrada,
+        "ffmpeg",
+        "-y",
+        "-i", entrada,
         "-vf", "scale=1280:720",
         "-r", "30",
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "27",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac",
+        "-b:a", "128k",
         salida,
     ]
-    subprocess.run(comando, check=True)
-    print("✓ Video comprimido.")
+
+    subprocess.run(
+        comando,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    print("[NYCTUS] Video comprimido correctamente.")
+
+    reportar_estado(
+        "comprimiendo",
+        93,
+        "Compresión finalizada.",
+    )
 
 
 # ============================================================
-# PROCESAMIENTO DE UN VIDEO (tu mismo flujo, convertido en función)
+# PROCESAMIENTO DE UN VIDEO CON YOLO
 # ============================================================
+
 def procesar_video(video_entrada):
+
+    reportar_estado(
+        "procesando",
+        20,
+        "La inteligencia artificial está analizando el video.",
+    )
+
     cap = cv2.VideoCapture(video_entrada)
+
     if not cap.isOpened():
-        print("ERROR: no se pudo abrir el video.")
-        return None
+        raise Exception("No se pudo abrir el video descargado.")
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
+
     ancho = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     alto = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
     cantidad_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
     duracion = cantidad_frames / fps if fps else 0
 
-    nombre_video = os.path.splitext(os.path.basename(video_entrada))[0]
-    video_salida = os.path.join(CARPETA_PROCESADOS, f"{nombre_video}_procesado.mp4")
-    labels_salida = os.path.join(CARPETA_LABELS, f"{nombre_video}_labels.json")
+    nombre_video = os.path.splitext(
+        os.path.basename(video_entrada)
+    )[0]
+
+    video_salida = os.path.join(
+        CARPETA_PROCESADOS,
+        f"{nombre_video}_procesado.mp4",
+    )
+
+    video_compacto = os.path.join(
+        CARPETA_PROCESADOS,
+        f"{nombre_video}_720p.mp4",
+    )
+
+    labels_salida = os.path.join(
+        CARPETA_LABELS,
+        f"{nombre_video}_labels.json",
+    )
 
     writer = cv2.VideoWriter(
-        video_salida, cv2.VideoWriter_fourcc(*"mp4v"), fps, (ancho, alto)
+        video_salida,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (ancho, alto),
     )
+
+    if not writer.isOpened():
+        cap.release()
+        raise Exception("No se pudo crear el video de salida.")
 
     ids_unicos = set()
     detecciones = []
+
     frame_numero = 0
+    ultimo_reporte = 0
 
     print("\n========================================")
     print("INICIANDO PROCESAMIENTO")
     print("========================================")
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame_numero += 1
+    try:
 
-        resultados = modelo.track(frame, conf=0.5, persist=True, verbose=False)[0]
+        while cap.isOpened():
 
-        if resultados.boxes.id is not None:
-            ids_unicos.update(resultados.boxes.id.int().tolist())
+            ret, frame = cap.read()
 
-        en_frame = len(resultados.boxes)
-
-        if resultados.boxes is not None:
-            cajas = resultados.boxes
-            for i in range(len(cajas)):
-                tracking_id = int(cajas.id[i].item()) if cajas.id is not None else None
-                clase_id = int(cajas.cls[i].item())
-                nombre_clase = modelo.names[clase_id]
-                confianza = float(cajas.conf[i].item())
-                x1, y1, x2, y2 = cajas.xyxy[i].tolist()
-                detecciones.append({
-                    "frame": frame_numero,
-                    "tracking_id": tracking_id,
-                    "clase": nombre_clase,
-                    "confianza": confianza,
-                    "x1": float(x1), "y1": float(y1),
-                    "x2": float(x2), "y2": float(y2),
-                })
-
-        frame_anotado = resultados.plot()
-        if frame_anotado.shape[:2] != (alto, ancho):
-            frame_anotado = cv2.resize(
-                frame_anotado, (ancho, alto), interpolation=cv2.INTER_LINEAR
-            )
-
-        cv2.rectangle(frame_anotado, (10, 10), (380, 80), (0, 0, 0), -1)
-        cv2.putText(frame_anotado, f"En escena: {en_frame}", (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 80), 2)
-        cv2.putText(frame_anotado, f"Total unicas: {len(ids_unicos)}", (20, 72),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
-
-        writer.write(frame_anotado)
-
-        if MOSTRAR_VENTANA:
-            cv2.imshow("NYCTUS - IA", frame_anotado)
-            if cv2.waitKey(1) & 0xFF == 27:
+            if not ret:
                 break
 
-    cap.release()
-    writer.release()
-    if MOSTRAR_VENTANA:
-        cv2.destroyAllWindows()
+            frame_numero += 1
 
-    video_compacto = os.path.join(CARPETA_PROCESADOS, f"{nombre_video}_720p.mp4")
-    comprimir_video(video_salida, video_compacto)
-    os.remove(video_salida)
+            # --------------------------------------------
+            # DETECCIÓN Y TRACKING YOLO
+            # --------------------------------------------
+
+            resultados = modelo.track(
+                frame,
+                conf=0.5,
+                persist=True,
+                verbose=False,
+            )[0]
+
+            if resultados.boxes.id is not None:
+                ids_unicos.update(
+                    resultados.boxes.id.int().tolist()
+                )
+
+            en_frame = len(resultados.boxes)
+
+            # --------------------------------------------
+            # GUARDADO DE DETECCIONES
+            # --------------------------------------------
+
+            if resultados.boxes is not None:
+
+                cajas = resultados.boxes
+
+                for i in range(len(cajas)):
+
+                    tracking_id = (
+                        int(cajas.id[i].item())
+                        if cajas.id is not None
+                        else None
+                    )
+
+                    clase_id = int(cajas.cls[i].item())
+
+                    nombre_clase = modelo.names[clase_id]
+
+                    confianza = float(cajas.conf[i].item())
+
+                    x1, y1, x2, y2 = cajas.xyxy[i].tolist()
+
+                    detecciones.append({
+                        "frame": frame_numero,
+                        "tracking_id": tracking_id,
+                        "clase": nombre_clase,
+                        "confianza": confianza,
+                        "x1": float(x1),
+                        "y1": float(y1),
+                        "x2": float(x2),
+                        "y2": float(y2),
+                    })
+
+            # --------------------------------------------
+            # VIDEO ANOTADO
+            # --------------------------------------------
+
+            frame_anotado = resultados.plot()
+
+            if frame_anotado.shape[:2] != (alto, ancho):
+
+                frame_anotado = cv2.resize(
+                    frame_anotado,
+                    (ancho, alto),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+
+            cv2.rectangle(
+                frame_anotado,
+                (10, 10),
+                (380, 80),
+                (0, 0, 0),
+                -1,
+            )
+
+            cv2.putText(
+                frame_anotado,
+                f"En escena: {en_frame}",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 255, 80),
+                2,
+            )
+
+            cv2.putText(
+                frame_anotado,
+                f"Total unicas: {len(ids_unicos)}",
+                (20, 72),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 200, 255),
+                2,
+            )
+
+            writer.write(frame_anotado)
+
+            # --------------------------------------------
+            # PROGRESO DEL PROCESAMIENTO
+            # --------------------------------------------
+
+            if cantidad_frames > 0:
+
+                progreso = 20 + int(
+                    (frame_numero / cantidad_frames) * 65
+                )
+
+                progreso = min(progreso, 85)
+
+                # Evita enviar una petición a Render
+                # por cada frame.
+                if progreso != ultimo_reporte:
+
+                    reportar_estado(
+                        "procesando",
+                        progreso,
+                        f"Analizando video: {frame_numero} "
+                        f"de {cantidad_frames} frames.",
+                    )
+
+                    ultimo_reporte = progreso
+
+            # --------------------------------------------
+            # VENTANA DE PREVISUALIZACIÓN
+            # --------------------------------------------
+
+            if MOSTRAR_VENTANA:
+
+                cv2.imshow(
+                    "NYCTUS - IA",
+                    frame_anotado,
+                )
+
+                if cv2.waitKey(1) & 0xFF == 27:
+                    raise Exception(
+                        "Procesamiento interrumpido por el usuario."
+                    )
+
+    finally:
+
+        cap.release()
+        writer.release()
+
+        if MOSTRAR_VENTANA:
+            cv2.destroyAllWindows()
+
+    # --------------------------------------------
+    # COMPRESIÓN
+    # --------------------------------------------
+
+    comprimir_video(
+        video_salida,
+        video_compacto,
+    )
+
+    if os.path.exists(video_salida):
+        os.remove(video_salida)
+
+    # --------------------------------------------
+    # GUARDADO DE LABELS JSON
+    # --------------------------------------------
 
     total_ganado = len(ids_unicos)
 
@@ -178,12 +442,24 @@ def procesar_video(video_entrada):
         "total_ganado": total_ganado,
         "detecciones": detecciones,
     }
-    with open(labels_salida, "w", encoding="utf-8") as f:
-        json.dump(datos_labels, f, indent=4, ensure_ascii=False)
+
+    with open(
+        labels_salida,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        json.dump(
+            datos_labels,
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
 
     print("\n========================================")
     print("PROCESAMIENTO TERMINADO")
     print("========================================")
+
     print(f"Ganado detectado: {total_ganado}")
     print(f"Duración: {duracion:.2f} segundos")
     print(f"Video procesado: {video_compacto}")
@@ -199,71 +475,217 @@ def procesar_video(video_entrada):
 # ============================================================
 # COMUNICACIÓN CON RENDER
 # ============================================================
+
 def hay_video_pendiente():
+
     try:
-        r = requests.get(f"{API_URL}/video-pendiente", timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        return data.get("estado") == "disponible"
+
+        respuesta = requests.get(
+            f"{API_URL}/video-pendiente",
+            timeout=15,
+        )
+
+        respuesta.raise_for_status()
+
+        datos = respuesta.json()
+
+        return datos.get("estado") == "disponible"
+
     except requests.exceptions.RequestException as e:
-        print(f"[nyctus] error consultando /video-pendiente: {e}")
+
+        print(
+            f"[NYCTUS] Error consultando videos pendientes: {e}"
+        )
+
         return False
 
 
 def descargar_video():
-    destino = os.path.join(CARPETA_DESCARGAS, f"nyctus_{int(time.time())}.mp4")
-    r = requests.get(f"{API_URL}/descargar-video", timeout=60)
-    r.raise_for_status()
-    with open(destino, "wb") as f:
-        f.write(r.content)
-    print(f"[nyctus] video descargado: {destino}")
 
-    # Avisar a Render que ya lo tomamos, para que /video-pendiente deje de
-    # ofrecerlo mientras lo procesamos (puede tardar varios minutos).
+    destino = os.path.join(
+        CARPETA_DESCARGAS,
+        f"nyctus_{int(time.time())}.mp4",
+    )
+
+    print("[NYCTUS] Descargando video desde Render...")
+
+    respuesta = requests.get(
+        f"{API_URL}/descargar-video",
+        timeout=(15, 180),
+        stream=True,
+    )
+
+    respuesta.raise_for_status()
+
     try:
-        requests.post(f"{API_URL}/video-pendiente/confirmar", timeout=10)
-    except requests.exceptions.RequestException as e:
-        print(f"[nyctus] aviso: no se pudo confirmar video-pendiente: {e}")
+
+        with open(destino, "wb") as f:
+
+            for bloque in respuesta.iter_content(
+                chunk_size=1024 * 1024
+            ):
+
+                if bloque:
+                    f.write(bloque)
+
+    except Exception:
+
+        if os.path.exists(destino):
+            os.remove(destino)
+
+        raise
+
+    finally:
+
+        respuesta.close()
+
+    if not os.path.exists(destino) or os.path.getsize(destino) == 0:
+        raise Exception("El video descargado está vacío.")
+
+    print(f"[NYCTUS] Video descargado: {destino}")
+
+    # Confirmamos que el worker tomó el video.
+    confirmacion = requests.post(
+        f"{API_URL}/video-pendiente/confirmar",
+        timeout=15,
+    )
+
+    confirmacion.raise_for_status()
+
+    print("[NYCTUS] Video confirmado en Render.")
 
     return destino
 
 
 def subir_resultado(resultado):
+
+    reportar_estado(
+        "subiendo_resultado",
+        95,
+        "Subiendo el video procesado a la nube.",
+    )
+
     datos = {
         "ganado": str(resultado["ganado"]),
         "personas": "0",
         "duracion": str(resultado["duracion"]),
         "fecha": datetime.now().isoformat(),
     }
-    try:
-        with open(resultado["video_path"], "rb") as f:
-            r = requests.post(
-                f"{API_URL}/subir-analisis",
-                data=datos,
-                files={"file": (os.path.basename(resultado["video_path"]), f, "video/mp4")},
-                timeout=120,
-            )
-        print(f"[nyctus] /subir-analisis -> {r.status_code}: {r.text[:200]}")
-    except requests.exceptions.RequestException as e:
-        print(f"[nyctus] error subiendo resultado a Render: {e}")
+
+    ruta_video = resultado["video_path"]
+
+    print("[NYCTUS] Subiendo resultado a Render...")
+
+    with open(ruta_video, "rb") as f:
+
+        respuesta = requests.post(
+            f"{API_URL}/subir-analisis",
+            data=datos,
+            files={
+                "file": (
+                    os.path.basename(ruta_video),
+                    f,
+                    "video/mp4",
+                )
+            },
+            timeout=(20, 600),
+        )
+
+    # Si Render devuelve un error HTTP, no damos el análisis
+    # por terminado.
+    respuesta.raise_for_status()
+
+    print(
+        f"[NYCTUS] Resultado subido correctamente: "
+        f"{respuesta.status_code}"
+    )
+
+    print(f"[NYCTUS] Respuesta: {respuesta.text[:300]}")
+
+    return True
 
 
 # ============================================================
 # LOOP PRINCIPAL
 # ============================================================
-def main():
-    print(f"[nyctus] worker YOLO escuchando a {API_URL} cada {POLL_SECONDS}s")
-    while True:
-        if hay_video_pendiente():
-            try:
-                video_local = descargar_video()
-                resultado = procesar_video(video_local)
-                if resultado:
-                    subir_resultado(resultado)
-            except Exception as e:
-                print(f"[nyctus] error procesando video: {e}")
-        time.sleep(POLL_SECONDS)
 
+def main():
+
+    print("\n========================================")
+    print("NYCTUS - WORKER DE INTELIGENCIA ARTIFICIAL")
+    print("========================================")
+
+    print(f"Servidor: {API_URL}")
+    print(f"Intervalo de consulta: {POLL_SECONDS} segundos")
+
+    iniciar_heartbeat()
+
+    reportar_estado(
+        "esperando_ia",
+        0,
+        "Worker conectado. Esperando videos.",
+    )
+
+    while True:
+
+        try:
+
+            if hay_video_pendiente():
+
+                print("\n[NYCTUS] Se encontró un video pendiente.")
+
+                try:
+
+                    reportar_estado(
+                        "descargando",
+                        15,
+                        "Descargando video desde Raspberry Pi.",
+                    )
+
+                    video_local = descargar_video()
+
+                    resultado = procesar_video(video_local)
+
+                    if resultado is None:
+                        raise Exception(
+                            "El procesamiento no devolvió resultados."
+                        )
+
+                    subir_resultado(resultado)
+
+                    print(
+                        "\n[NYCTUS] Análisis enviado correctamente."
+                    )
+
+                except Exception as e:
+
+                    informar_error(str(e))
+
+                    print(
+                        f"[NYCTUS] Error durante el análisis: {e}"
+                    )
+
+            else:
+
+                time.sleep(POLL_SECONDS)
+
+        except KeyboardInterrupt:
+
+            print("\n[NYCTUS] Worker detenido manualmente.")
+
+            break
+
+        except Exception as e:
+
+            print(f"[NYCTUS] Error en el loop principal: {e}")
+
+            time.sleep(POLL_SECONDS)
+
+
+# ============================================================
+# INICIO
+# ============================================================
 
 if __name__ == "__main__":
     main()
+```
