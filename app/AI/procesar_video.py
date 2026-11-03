@@ -1,4 +1,3 @@
-```python
 #!/usr/bin/env python3
 """
 NYCTUS - Worker de notebook/PC (procesar_video.py).
@@ -12,6 +11,11 @@ Funciones:
 6. Sube el resultado a Render.
 7. Informa estados, progreso y errores.
 8. Envía heartbeat para informar que la PC está conectada.
+
+IMPORTANTE:
+El heartbeat NO modifica el estado del análisis.
+La computadora puede estar conectada y esperando sin bloquear
+el botón "Nuevo análisis" de la aplicación.
 """
 
 import json
@@ -66,7 +70,6 @@ print("[NYCTUS] Modelo cargado correctamente.")
 # ============================================================
 
 def reportar_estado(estado, progreso, mensaje):
-    """Informa a Render el estado actual del análisis."""
 
     datos = {
         "estado": estado,
@@ -75,6 +78,7 @@ def reportar_estado(estado, progreso, mensaje):
     }
 
     try:
+
         respuesta = requests.post(
             f"{API_URL}/estado/actualizar",
             json=datos,
@@ -89,15 +93,18 @@ def reportar_estado(estado, progreso, mensaje):
         )
 
     except requests.exceptions.RequestException as e:
-        print(f"[NYCTUS] No se pudo actualizar el estado: {e}")
+
+        print(
+            f"[NYCTUS] No se pudo actualizar el estado: {e}"
+        )
 
 
 def informar_error(mensaje):
-    """Informa a Render que el análisis tuvo un error."""
 
     print(f"[NYCTUS] ERROR: {mensaje}")
 
     try:
+
         respuesta = requests.post(
             f"{API_URL}/estado/error",
             json={"error": str(mensaje)},
@@ -107,7 +114,10 @@ def informar_error(mensaje):
         respuesta.raise_for_status()
 
     except requests.exceptions.RequestException as e:
-        print(f"[NYCTUS] No se pudo informar el error: {e}")
+
+        print(
+            f"[NYCTUS] No se pudo informar el error: {e}"
+        )
 
 
 # ============================================================
@@ -115,15 +125,19 @@ def informar_error(mensaje):
 # ============================================================
 
 def mantener_worker_activo():
+
     """
     Envía señales periódicas a Render.
 
-    Se ejecuta en un hilo independiente para que el servidor
-    sepa que la PC sigue conectada incluso durante el procesamiento.
+    IMPORTANTE:
+    Este proceso solamente informa que la PC está conectada.
+    No modifica el estado del análisis.
     """
 
     while True:
+
         try:
+
             respuesta = requests.post(
                 f"{API_URL}/worker/heartbeat",
                 timeout=10,
@@ -132,12 +146,16 @@ def mantener_worker_activo():
             respuesta.raise_for_status()
 
         except requests.exceptions.RequestException as e:
-            print(f"[NYCTUS] Heartbeat: no se pudo contactar Render: {e}")
+
+            print(
+                f"[NYCTUS] Heartbeat: no se pudo contactar Render: {e}"
+            )
 
         time.sleep(HEARTBEAT_SECONDS)
 
 
 def iniciar_heartbeat():
+
     hilo = threading.Thread(
         target=mantener_worker_activo,
         daemon=True,
@@ -247,7 +265,9 @@ def procesar_video(video_entrada):
     )
 
     if not writer.isOpened():
+
         cap.release()
+
         raise Exception("No se pudo crear el video de salida.")
 
     ids_unicos = set()
@@ -283,6 +303,7 @@ def procesar_video(video_entrada):
             )[0]
 
             if resultados.boxes.id is not None:
+
                 ids_unicos.update(
                     resultados.boxes.id.int().tolist()
                 )
@@ -380,8 +401,6 @@ def procesar_video(video_entrada):
 
                 progreso = min(progreso, 85)
 
-                # Evita enviar una petición a Render
-                # por cada frame.
                 if progreso != ultimo_reporte:
 
                     reportar_estado(
@@ -405,6 +424,7 @@ def procesar_video(video_entrada):
                 )
 
                 if cv2.waitKey(1) & 0xFF == 27:
+
                     raise Exception(
                         "Procesamiento interrumpido por el usuario."
                     )
@@ -540,11 +560,13 @@ def descargar_video():
         respuesta.close()
 
     if not os.path.exists(destino) or os.path.getsize(destino) == 0:
+
         raise Exception("El video descargado está vacío.")
 
     print(f"[NYCTUS] Video descargado: {destino}")
 
     # Confirmamos que el worker tomó el video.
+
     confirmacion = requests.post(
         f"{API_URL}/video-pendiente/confirmar",
         timeout=15,
@@ -591,8 +613,6 @@ def subir_resultado(resultado):
             timeout=(20, 600),
         )
 
-    # Si Render devuelve un error HTTP, no damos el análisis
-    # por terminado.
     respuesta.raise_for_status()
 
     print(
@@ -620,10 +640,13 @@ def main():
 
     iniciar_heartbeat()
 
-    reportar_estado(
-        "esperando_ia",
-        0,
-        "Worker conectado. Esperando videos.",
+    # IMPORTANTE:
+    # No enviar "esperando_ia" al iniciar.
+    # El worker está conectado, pero eso no significa que
+    # exista un análisis en curso.
+    print(
+        "[NYCTUS] Worker conectado. "
+        "Esperando videos sin modificar el estado del análisis."
     )
 
     while True:
@@ -647,6 +670,7 @@ def main():
                     resultado = procesar_video(video_local)
 
                     if resultado is None:
+
                         raise Exception(
                             "El procesamiento no devolvió resultados."
                         )
@@ -688,4 +712,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
