@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -648,7 +649,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(height: 12),
 
                       LinearProgressIndicator(
-                        value: progreso / 100,
+                        value: progreso <= 0
+                          ? 0.0
+                          : progreso >= 100
+                              ? 1.0
+                              : math.log(1 + 9 * (progreso / 100)) / math.log(10),
                         minHeight: 9,
                         borderRadius: BorderRadius.circular(10),
                         backgroundColor: Colors.grey.shade800,
