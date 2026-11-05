@@ -21,7 +21,7 @@ DIR = os.environ.get("VIDEO_DIR", "/home/nyctus/videos")
 NAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 # NYCTUS / Render
-RENDER_API_URL = os.environ.get("RENDER_API_URL", "").rstrip("/")
+RENDER_API_URL = "http://192.168.111.99:8000"
 RENDER_POLL_SECONDS = int(os.environ.get("RENDER_POLL_SECONDS", "5"))
 AUTO_RECORD_SECONDS = int(os.environ.get("AUTO_RECORD_SECONDS", "40"))
 # ----------------------------------------------------------------------

@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String baseUrl = 'https://nyctus.onrender.com';
+  static const String baseUrl = 'http://192.168.111.99:8000';
 
   static Future<Map<String, dynamic>> obtenerAnalisis() async {
     final response = await http

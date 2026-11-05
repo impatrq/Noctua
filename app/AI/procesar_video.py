@@ -34,7 +34,7 @@ from ultralytics import YOLO
 # CONFIGURACIÓN
 # ============================================================
 
-API_URL = "https://nyctus.onrender.com"
+API_URL = "http://127.0.0.1:8000"
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
