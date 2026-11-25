@@ -6,6 +6,11 @@
 
 ---
 
+<p align="center">
+  <img src="assets/equipo-nyctus.jpg" alt="Equipo de NYCTUS durante la presentación del proyecto" width="750">
+</p>
+
+
 ## 📌 Descripción
 
 NYCTUS es un sistema de monitoreo inteligente orientado al sector agropecuario que utiliza visión artificial e inteligencia artificial para detectar, identificar y contabilizar animales de manera automática.
