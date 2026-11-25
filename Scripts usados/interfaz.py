@@ -6,7 +6,7 @@ import threading
 import os
 
 # ─── CONFIGURACIÓN ────────────────────────────────────────────
-MODELO_PATH = r"C:\Users\juanc\OneDrive\Desktop\NYCTUS\models\best.pt"
+MODELO_PATH = r"C:\Users\juanc\Desktop\NYCTUS\models\best.pt"
 CONFIANZA   = 0.5
 # ──────────────────────────────────────────────────────────────
 
