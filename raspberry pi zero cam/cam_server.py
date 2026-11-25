@@ -5,36 +5,217 @@ import signal
 import subprocess
 import threading
 import time
+import json
+import socket
 
 import requests
 from flask import Flask, redirect, request, send_from_directory
 
-# ---- settings ---------------------------------------------------------
+
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
 AUTO_START = False
+
 WIFI_OFF_MINUTES = 0
 WIFI_IFACE = "wlan0"
 WAIT_FOR_WIFI_SECONDS = 40
+
 HOTSPOT_NAME = "PiCamHotspot"
 HOTSPOT_SSID = "PiCam"
 HOTSPOT_PASS = os.environ.get("HOTSPOT_PASS", "picam1234")
+
 DIR = os.environ.get("VIDEO_DIR", "/home/nyctus/videos")
 NAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
-# NYCTUS / Render
-RENDER_API_URL = "http://192.168.111.99:8000"
-RENDER_POLL_SECONDS = int(os.environ.get("RENDER_POLL_SECONDS", "5"))
-AUTO_RECORD_SECONDS = int(os.environ.get("AUTO_RECORD_SECONDS", "40"))
-# ----------------------------------------------------------------------
+RENDER_POLL_SECONDS = int(
+    os.environ.get("RENDER_POLL_SECONDS", "5")
+)
+
+AUTO_RECORD_SECONDS = int(
+    os.environ.get("AUTO_RECORD_SECONDS", "40")
+)
+
+
+# ============================================================
+# NYCTUS - DESCUBRIMIENTO AUTOMÁTICO DEL SERVIDOR
+# ============================================================
+
+API_URL = None
+
+PUERTO_DESCUBRIMIENTO = 37020
+MENSAJE_DESCUBRIMIENTO = b"NYCTUS_DISCOVER"
+
+
+def descubrir_servidor(timeout=4):
+    global API_URL
+
+    cliente = socket.socket(
+        socket.AF_INET,
+        socket.SOCK_DGRAM
+    )
+
+    cliente.setsockopt(
+        socket.SOL_SOCKET,
+        socket.SO_BROADCAST,
+        1
+    )
+
+    cliente.settimeout(timeout)
+
+    try:
+        print("[NYCTUS] Buscando servidor en la red local...")
+
+        cliente.sendto(
+            MENSAJE_DESCUBRIMIENTO,
+            ("255.255.255.255", PUERTO_DESCUBRIMIENTO)
+        )
+
+        while True:
+            datos, direccion = cliente.recvfrom(1024)
+
+            try:
+                respuesta = json.loads(
+                    datos.decode("utf-8")
+                )
+
+                if respuesta.get("service") != "nyctus":
+                    continue
+
+                host = respuesta.get("host")
+                puerto = respuesta.get("port")
+
+                if host and puerto:
+                    API_URL = f"http://{host}:{puerto}"
+
+                    print(
+                        f"[NYCTUS] Servidor encontrado: {API_URL}"
+                    )
+
+                    return API_URL
+
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+
+    except socket.timeout:
+        print(
+            "[NYCTUS] No se encontró el servidor. "
+            "Se volverá a intentar."
+        )
+
+    except Exception as error:
+        print(
+            f"[NYCTUS] Error durante el descubrimiento: {error}"
+        )
+
+    finally:
+        cliente.close()
+
+    return None
+
+
+def obtener_api_url():
+    global API_URL
+
+    if API_URL:
+        return API_URL
+
+    return descubrir_servidor()
+
+
+def reiniciar_archivos(kwargs):
+    """
+    Vuelve al inicio los archivos abiertos para que una segunda
+    petición pueda reenviarlos si se perdió la conexión.
+    """
+
+    archivos = kwargs.get("files")
+
+    if not isinstance(archivos, dict):
+        return
+
+    for valor in archivos.values():
+        if isinstance(valor, (tuple, list)) and len(valor) >= 2:
+            archivo = valor[1]
+
+            if hasattr(archivo, "seek"):
+                try:
+                    archivo.seek(0)
+                except Exception:
+                    pass
+
+
+def api_request(metodo, endpoint, **kwargs):
+    """
+    Envía solicitudes a FastAPI.
+
+    Si se pierde la conexión:
+    1. Descarta la IP anterior.
+    2. Busca nuevamente el servidor.
+    3. Reintenta la solicitud.
+    """
+
+    global API_URL
+
+    url = obtener_api_url()
+
+    if not url:
+        raise ConnectionError(
+            "No se encontró el servidor NYCTUS"
+        )
+
+    try:
+        return requests.request(
+            metodo,
+            url + endpoint,
+            **kwargs
+        )
+
+    except requests.RequestException:
+        print(
+            "[NYCTUS] Conexión perdida. "
+            "Buscando nuevamente el servidor..."
+        )
+
+        API_URL = None
+
+        reiniciar_archivos(kwargs)
+
+        url = descubrir_servidor()
+
+        if not url:
+            raise ConnectionError(
+                "No se pudo recuperar la conexión con NYCTUS"
+            )
+
+        print("[NYCTUS] Reintentando solicitud...")
+
+        return requests.request(
+            metodo,
+            url + endpoint,
+            **kwargs
+        )
+
+
+# ============================================================
+# INICIALIZACIÓN DE FLASK
+# ============================================================
 
 app = Flask(__name__)
+
 os.makedirs(DIR, exist_ok=True)
 
 proc = None
 current = None
 started_mono = None
 
-# Evita que dos procesos automáticos intenten grabar al mismo tiempo.
 auto_analysis_lock = threading.Lock()
+
+
+# ============================================================
+# PÁGINA WEB
+# ============================================================
 
 PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -61,17 +242,15 @@ fetch('/settime', {method: 'POST', body: String(Date.now())})
 
 
 # ============================================================
-# COMUNICACIÓN CON RENDER
+# COMUNICACIÓN CON NYCTUS
 # ============================================================
 
-def reportar_estado(estado, progreso=None, mensaje=None, error=None):
-    """
-    Informa a Render el estado de la Raspberry.
-    Si no hay conexión, la grabación no se interrumpe.
-    """
-    if not RENDER_API_URL:
-        return False
-
+def reportar_estado(
+    estado,
+    progreso=None,
+    mensaje=None,
+    error=None
+):
     datos = {
         "estado": estado,
         "mensaje": mensaje or estado
@@ -84,35 +263,43 @@ def reportar_estado(estado, progreso=None, mensaje=None, error=None):
         datos["error"] = error
 
     try:
-        respuesta = requests.post(
-            RENDER_API_URL + "/estado/actualizar",
+        respuesta = api_request(
+            "POST",
+            "/estado/actualizar",
             json=datos,
             timeout=10
         )
+
         respuesta.raise_for_status()
+
         return True
 
-    except requests.RequestException as e:
-        print(f"[nyctus] no se pudo informar estado: {e}")
+    except Exception as e:
+        print(
+            f"[NYCTUS] No se pudo informar el estado: {e}"
+        )
+
         return False
 
 
 def informar_error(mensaje):
-    if not RENDER_API_URL:
-        return
-
     try:
-        requests.post(
-            RENDER_API_URL + "/estado/error",
+        respuesta = api_request(
+            "POST",
+            "/estado/error",
             json={
                 "mensaje": mensaje,
                 "error": mensaje
             },
             timeout=10
-        ).raise_for_status()
+        )
 
-    except requests.RequestException as e:
-        print(f"[nyctus] no se pudo informar el error: {e}")
+        respuesta.raise_for_status()
+
+    except Exception as e:
+        print(
+            f"[NYCTUS] No se pudo informar el error: {e}"
+        )
 
 
 # ============================================================
@@ -128,10 +315,16 @@ def nm(*args):
 
 
 def wifi_connected():
-    out = nm("-t", "-f", "DEVICE,STATE,CONNECTION", "device").stdout
+    out = nm(
+        "-t",
+        "-f",
+        "DEVICE,STATE,CONNECTION",
+        "device"
+    ).stdout
 
     for line in out.splitlines():
         parts = (line.split(":") + ["", "", ""])[:3]
+
         device, state, connection = parts
 
         if device == WIFI_IFACE and state == "connected":
@@ -141,30 +334,44 @@ def wifi_connected():
 
 
 def start_hotspot():
+    print("[NYCTUS] No se encontró Wi-Fi. Creando hotspot propio...")
+
     nm("connection", "delete", HOTSPOT_NAME)
 
     nm(
-        "device", "wifi", "hotspot",
-        "ifname", WIFI_IFACE,
-        "con-name", HOTSPOT_NAME,
-        "ssid", HOTSPOT_SSID,
-        "password", HOTSPOT_PASS
+        "device",
+        "wifi",
+        "hotspot",
+        "ifname",
+        WIFI_IFACE,
+        "con-name",
+        HOTSPOT_NAME,
+        "ssid",
+        HOTSPOT_SSID,
+        "password",
+        HOTSPOT_PASS
     )
 
     nm(
-        "connection", "modify",
+        "connection",
+        "modify",
         HOTSPOT_NAME,
-        "connection.autoconnect", "no"
+        "connection.autoconnect",
+        "no"
     )
 
 
 def ensure_network():
+    print("[NYCTUS] Comprobando conexión Wi-Fi...")
+
     nm("radio", "wifi", "on")
 
     deadline = time.time() + WAIT_FOR_WIFI_SECONDS
 
     while time.time() < deadline:
+
         if wifi_connected():
+            print("[NYCTUS] Conexión Wi-Fi establecida.")
             return
 
         time.sleep(2)
@@ -183,8 +390,10 @@ def now_text():
 def clock_synced():
     out = subprocess.run(
         [
-            "timedatectl", "show",
-            "-p", "NTPSynchronized",
+            "timedatectl",
+            "show",
+            "-p",
+            "NTPSynchronized",
             "--value"
         ],
         capture_output=True,
@@ -227,21 +436,28 @@ def start_recording():
             "-o", current + ".h264"
         ])
 
+        print("[CAMERA] Grabación iniciada.")
+
         return True
 
     except Exception as e:
-        print(f"[camera] error al iniciar grabación: {e}")
+        print(
+            f"[CAMERA] Error al iniciar grabación: {e}"
+        )
+
         proc = None
         current = None
         started_mono = None
+
         return False
 
 
 def stop_recording():
     """
     Detiene la grabación y devuelve el MP4 final.
-    Si ffmpeg no está disponible, devuelve el H264.
+    Si FFmpeg no está disponible, devuelve el H264.
     """
+
     global proc, current, started_mono
 
     if not recording():
@@ -260,7 +476,10 @@ def stop_recording():
 
     final = os.path.join(
         DIR,
-        time.strftime(NAME_FORMAT, time.localtime(began))
+        time.strftime(
+            NAME_FORMAT,
+            time.localtime(began)
+        )
     )
 
     n = 1
@@ -279,9 +498,13 @@ def stop_recording():
     if not os.path.exists(archivo_h264):
         return None
 
-    os.rename(archivo_h264, archivo_final_h264)
+    os.rename(
+        archivo_h264,
+        archivo_final_h264
+    )
 
     if shutil.which("ffmpeg"):
+
         resultado = subprocess.run([
             "ffmpeg",
             "-y",
@@ -291,14 +514,23 @@ def stop_recording():
             base + ".mp4"
         ])
 
-        if resultado.returncode == 0 and os.path.exists(base + ".mp4"):
+        if (
+            resultado.returncode == 0
+            and os.path.exists(base + ".mp4")
+        ):
             os.remove(archivo_final_h264)
+
             current = None
             started_mono = None
+
+            print("[CAMERA] Video convertido a MP4.")
+
             return base + ".mp4"
 
     current = None
     started_mono = None
+
+    print("[CAMERA] No se pudo convertir a MP4.")
 
     return archivo_final_h264
 
@@ -309,7 +541,10 @@ def stop_recording():
 
 @app.route("/")
 def home():
-    names = sorted(os.listdir(DIR), reverse=True)
+    names = sorted(
+        os.listdir(DIR),
+        reverse=True
+    )
 
     items = "".join(
         f'<li><a href="/video/{n}">{n}</a></li>'
@@ -317,7 +552,11 @@ def home():
         if n.endswith((".mp4", ".h264"))
     )
 
-    status = "Recording..." if recording() else "Idle"
+    status = (
+        "Recording..."
+        if recording()
+        else "Idle"
+    )
 
     return (
         PAGE.replace("{status}", status)
@@ -329,7 +568,10 @@ def home():
 @app.route("/settime", methods=["POST"])
 def settime():
     try:
-        phone = int(request.get_data(as_text=True)) / 1000.0
+        phone = int(
+            request.get_data(as_text=True)
+        ) / 1000.0
+
     except ValueError:
         return "bad time", 400
 
@@ -338,7 +580,11 @@ def settime():
         and not clock_synced()
         and abs(phone - time.time()) > 2
     ):
-        subprocess.run(["date", "-s", f"@{int(phone)}"])
+        subprocess.run([
+            "date",
+            "-s",
+            f"@{int(phone)}"
+        ])
 
     return now_text()
 
@@ -357,7 +603,11 @@ def stop():
 
 @app.route("/video/<name>")
 def video(name):
-    return send_from_directory(DIR, name, as_attachment=True)
+    return send_from_directory(
+        DIR,
+        name,
+        as_attachment=True
+    )
 
 
 # ============================================================
@@ -371,7 +621,7 @@ def run_auto_analysis():
     2. Informa que comienza la grabación.
     3. Graba AUTO_RECORD_SECONDS.
     4. Informa que está subiendo el video.
-    5. Envía el video original a Render.
+    5. Envía el video original a la PC.
     6. Confirma la orden solamente si la subida fue exitosa.
     """
 
@@ -379,13 +629,16 @@ def run_auto_analysis():
         return
 
     try:
+
         if recording():
-            print("[nyctus] cámara ocupada por grabación manual")
+            print(
+                "[NYCTUS] Cámara ocupada por grabación manual."
+            )
             return
 
         print(
-            f"[nyctus] comenzando grabación automática "
-            f"de {AUTO_RECORD_SECONDS} segundos"
+            f"[NYCTUS] Comenzando grabación automática "
+            f"de {AUTO_RECORD_SECONDS} segundos."
         )
 
         reportar_estado(
@@ -395,18 +648,27 @@ def run_auto_analysis():
         )
 
         if not start_recording():
-            informar_error("No se pudo iniciar la cámara")
+            informar_error(
+                "No se pudo iniciar la cámara"
+            )
             return
 
         time.sleep(AUTO_RECORD_SECONDS)
 
         video_path = stop_recording()
 
-        if not video_path or not os.path.exists(video_path):
-            informar_error("La grabación terminó sin generar un archivo")
+        if (
+            not video_path
+            or not os.path.exists(video_path)
+        ):
+            informar_error(
+                "La grabación terminó sin generar un archivo"
+            )
             return
 
-        print(f"[nyctus] video grabado: {video_path}")
+        print(
+            f"[NYCTUS] Video grabado: {video_path}"
+        )
 
         reportar_estado(
             "subiendo",
@@ -415,13 +677,25 @@ def run_auto_analysis():
         )
 
         try:
+
             with open(video_path, "rb") as f:
-                respuesta = requests.post(
-                    RENDER_API_URL + "/subir-video",
+
+                nombre = os.path.basename(video_path)
+
+                tipo_video = (
+                    "video/mp4"
+                    if video_path.endswith(".mp4")
+                    else "video/x-h264"
+                )
+
+                respuesta = api_request(
+                    "POST",
+                    "/subir-video",
                     files={
                         "file": (
-                            os.path.basename(video_path),
-                            f
+                            nombre,
+                            f,
+                            tipo_video
                         )
                     },
                     timeout=180
@@ -429,20 +703,23 @@ def run_auto_analysis():
 
             respuesta.raise_for_status()
 
-            # Solo confirmar cuando Render recibió correctamente el video.
-            confirmacion = requests.post(
-                RENDER_API_URL + "/pendientes/confirmar",
+            confirmacion = api_request(
+                "POST",
+                "/pendientes/confirmar",
                 timeout=15
             )
 
             confirmacion.raise_for_status()
 
             print(
-                f"[nyctus] video enviado correctamente: {video_path}"
+                f"[NYCTUS] Video enviado correctamente: {video_path}"
             )
 
-        except requests.RequestException as e:
-            print(f"[nyctus] error subiendo video: {e}")
+        except Exception as e:
+
+            print(
+                f"[NYCTUS] Error subiendo video: {e}"
+            )
 
             informar_error(
                 "La Raspberry no pudo enviar el video al servidor: "
@@ -450,7 +727,11 @@ def run_auto_analysis():
             )
 
     except Exception as e:
-        print(f"[nyctus] error en análisis automático: {e}")
+
+        print(
+            f"[NYCTUS] Error en análisis automático: {e}"
+        )
+
         informar_error(str(e))
 
     finally:
@@ -458,23 +739,21 @@ def run_auto_analysis():
 
 
 # ============================================================
-# CONSULTAR ÓRDENES DE RENDER
+# CONSULTAR ÓRDENES DE NYCTUS
 # ============================================================
 
 def poll_render():
-    if not RENDER_API_URL:
-        print("[nyctus] RENDER_API_URL no configurada. Polling desactivado.")
-        return
-
     print(
-        f"[nyctus] consultando {RENDER_API_URL}/pendientes "
-        f"cada {RENDER_POLL_SECONDS} segundos"
+        "[NYCTUS] Iniciando búsqueda automática del servidor..."
     )
 
     while True:
+
         try:
-            respuesta = requests.get(
-                RENDER_API_URL + "/pendientes",
+
+            respuesta = api_request(
+                "GET",
+                "/pendientes",
                 timeout=10
             )
 
@@ -483,14 +762,18 @@ def poll_render():
             datos = respuesta.json()
 
             if datos.get("accion") == "analizar":
-                if not recording() and not auto_analysis_lock.locked():
+
+                if (
+                    not recording()
+                    and not auto_analysis_lock.locked()
+                ):
                     run_auto_analysis()
 
-        except requests.RequestException as e:
-            print(f"[nyctus] error consultando Render: {e}")
-
         except Exception as e:
-            print(f"[nyctus] error inesperado en polling: {e}")
+
+            print(
+                f"[NYCTUS] Error consultando el servidor: {e}"
+            )
 
         time.sleep(RENDER_POLL_SECONDS)
 
@@ -501,10 +784,15 @@ def poll_render():
 
 if __name__ == "__main__":
 
+    print("========================================")
+    print("       NYCTUS - RASPBERRY PI")
+    print("========================================")
+
     if AUTO_START:
         start_recording()
 
     if WIFI_OFF_MINUTES > 0:
+
         nm("radio", "wifi", "off")
 
         worker_thread = threading.Timer(
@@ -513,19 +801,25 @@ if __name__ == "__main__":
         )
 
     else:
+
         worker_thread = threading.Thread(
-            target=ensure_network
+            target=ensure_network,
+            daemon=True
         )
 
     worker_thread.daemon = True
     worker_thread.start()
 
-    if RENDER_API_URL:
-        poll_thread = threading.Thread(
-            target=poll_render,
-            daemon=True
-        )
-        poll_thread.start()
+    # Inicia el polling aunque todavía no se haya descubierto la PC.
+    poll_thread = threading.Thread(
+        target=poll_render,
+        daemon=True
+    )
+
+    poll_thread.start()
+
+    print("[NYCTUS] Sistema iniciado.")
+    print("[NYCTUS] Página de cámara disponible en el puerto 80.")
 
     app.run(
         host="0.0.0.0",
