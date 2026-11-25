@@ -79,7 +79,7 @@ El proyecto combina drones, procesamiento de imágenes y una estación autónoma
 ```mermaid
 flowchart LR
     A[🚁 Drone + Pi Zero W] -->|Video| B[💻 PC con modelo YOLOv8]
-    B -->|Conteo + GPS| C[☁️ Servidor FastAPI]
+    B -->|Conteo| C[☁️ Servidor FastAPI]
     C --> D[📱 App Flutter]
 ```
 
