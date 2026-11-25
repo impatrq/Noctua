@@ -6,13 +6,13 @@
 </p>
 
 <p align="center">
-  <img src="TU_RUTA_AL_LOGO.png" alt="NYCTUS Logo" width="250">
+  <img src="docs\Nyctus_logo.jpeg" alt="NYCTUS Logo" width="250">
 </p>
 
 <p align="center">
 
 <!-- Video de Presentación -->
-<a href="TU_LINK_DE_YOUTUBE_O_DRIVE" target="_blank">
+<a href="(https://youtu.be/U8It-0T8Jfw?si=3aQN_7FjY90hRYC8)" target="_blank">
   <img src="https://img.shields.io/badge/Video%20de%20Presentación-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Video de presentación">
 </a>
 
@@ -22,7 +22,7 @@
 </a>
 
 <!-- Instagram (opcional) -->
-<a href="TU_INSTAGRAM" target="_blank">
+<a href="(https://www.instagram.com/proyecto_nyctus/)" target="_blank">
   <img src="https://img.shields.io/badge/Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram">
 </a>
 
@@ -147,7 +147,7 @@ NYCTUS/
 ## 🧑‍💻 Equipo
 
 <p align="center">
-  <img src="TU_FOTO_DEL_GRUPO.jpg" width="400">
+  <img src="docs\fotogrupo.jpg" width="400">
 </p>
 
 | Integrante | Contacto |
